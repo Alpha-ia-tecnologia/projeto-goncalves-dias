@@ -1,0 +1,319 @@
+{
+  "file": "goncalves-dias.glb",
+  "bytes": 8188432,
+  "source": "goncalves_dias_animado_boca.blend",
+  "vertices": 75948,
+  "triangles": 129997,
+  "original": {
+    "vertices": 677219,
+    "triangles": 1000000
+  },
+  "units": "meters",
+  "upAxis": "Y",
+  "frontAxis": "+Z",
+  "boundingBox": {
+    "min": [
+      -0.4100632667541504,
+      -9.072422835743055e-05,
+      -0.2250487506389618
+    ],
+    "max": [
+      0.4100286066532135,
+      1.8992096185684204,
+      0.22587715089321136
+    ]
+  },
+  "morphTargets": [
+    "Boca - abrir",
+    "Labios - alargar",
+    "Labios - arredondar"
+  ],
+  "bones": [
+    {
+      "name": "Mao.D",
+      "translation": [
+        4.6566128730773926e-09,
+        0.2697814106941223,
+        -1.862645149230957e-08
+      ],
+      "rotation": [
+        -0.009775894694030285,
+        0.18260988593101501,
+        -0.13550789654254913,
+        0.9737533926963806
+      ],
+      "scale": [
+        0.9999999403953552,
+        1,
+        0.9999999403953552
+      ],
+      "children": [],
+      "nodeIndex": 0
+    },
+    {
+      "name": "Antebraco.D",
+      "translation": [
+        -3.259629011154175e-08,
+        0.30829212069511414,
+        0
+      ],
+      "rotation": [
+        -0.16525767743587494,
+        -0.005640510004013777,
+        0.04458211362361908,
+        0.9852261543273926
+      ],
+      "scale": [
+        0.9999999403953552,
+        0.9999999403953552,
+        0.9999998807907104
+      ],
+      "children": [
+        0
+      ],
+      "nodeIndex": 1
+    },
+    {
+      "name": "Braco.D",
+      "translation": [
+        -0.22499999403953552,
+        0.19669067859649658,
+        -0.03623250126838684
+      ],
+      "rotation": [
+        0.9858337640762329,
+        -0.1210511326789856,
+        -0.1007884070277214,
+        0.057620398700237274
+      ],
+      "scale": [
+        1.0000015497207642,
+        1,
+        1.0000005960464478
+      ],
+      "children": [
+        1
+      ],
+      "nodeIndex": 2
+    },
+    {
+      "name": "Mao.E",
+      "translation": [
+        -4.6566128730773926e-09,
+        0.2697814106941223,
+        -1.862645149230957e-08
+      ],
+      "rotation": [
+        -0.009775894694030285,
+        -0.18260988593101501,
+        0.13550789654254913,
+        0.9737533926963806
+      ],
+      "scale": [
+        0.9999999403953552,
+        1,
+        0.9999999403953552
+      ],
+      "children": [],
+      "nodeIndex": 3
+    },
+    {
+      "name": "Antebraco.E",
+      "translation": [
+        3.259629011154175e-08,
+        0.30829212069511414,
+        0
+      ],
+      "rotation": [
+        -0.16525767743587494,
+        0.005640510004013777,
+        -0.04458211362361908,
+        0.9852261543273926
+      ],
+      "scale": [
+        0.9999999403953552,
+        0.9999999403953552,
+        0.9999998807907104
+      ],
+      "children": [
+        3
+      ],
+      "nodeIndex": 4
+    },
+    {
+      "name": "Braco.E",
+      "translation": [
+        0.22499999403953552,
+        0.19669067859649658,
+        -0.03623250126838684
+      ],
+      "rotation": [
+        0.9858337640762329,
+        0.1210511326789856,
+        0.1007884070277214,
+        0.057620398700237274
+      ],
+      "scale": [
+        1.0000015497207642,
+        1,
+        1.0000005960464478
+      ],
+      "children": [
+        4
+      ],
+      "nodeIndex": 5
+    },
+    {
+      "name": "Cabeca",
+      "translation": [
+        0,
+        0.14713944494724274,
+        0
+      ],
+      "rotation": [
+        -0.09542486816644669,
+        0,
+        0,
+        0.9954366087913513
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "children": [],
+      "nodeIndex": 6
+    },
+    {
+      "name": "Pescoco",
+      "translation": [
+        0,
+        0.1931968331336975,
+        -1.862645149230957e-08
+      ],
+      "rotation": [
+        -0.005716472864151001,
+        0,
+        0,
+        0.9999836683273315
+      ],
+      "scale": [
+        1,
+        1,
+        0.9999999403953552
+      ],
+      "children": [
+        6
+      ],
+      "nodeIndex": 7
+    },
+    {
+      "name": "Peito",
+      "translation": [
+        0,
+        0.22022698819637299,
+        2.7939677238464355e-09
+      ],
+      "rotation": [
+        0.06831920892000198,
+        0,
+        0,
+        0.9976634979248047
+      ],
+      "scale": [
+        1,
+        0.9999999403953552,
+        1
+      ],
+      "children": [
+        2,
+        5,
+        7
+      ],
+      "nodeIndex": 8
+    },
+    {
+      "name": "Coluna",
+      "translation": [
+        0,
+        0.20056168735027313,
+        3.725290298461914e-09
+      ],
+      "rotation": [
+        -0.014717735350131989,
+        0,
+        0,
+        0.9998916983604431
+      ],
+      "scale": [
+        1,
+        0.9999998807907104,
+        0.9999999403953552
+      ],
+      "children": [
+        8
+      ],
+      "nodeIndex": 9
+    },
+    {
+      "name": "Base",
+      "translation": [
+        0,
+        0.8799999952316284,
+        -0.03500000014901161
+      ],
+      "rotation": [
+        0.03742116689682007,
+        0,
+        0,
+        0.9992995858192444
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "children": [
+        9
+      ],
+      "nodeIndex": 10
+    }
+  ],
+  "materials": [
+    {
+      "name": "model",
+      "extras": {},
+      "hasBaseColorTexture": true
+    },
+    {
+      "name": "Boca - interior durante a fala (web)",
+      "extras": {
+        "mouthInterior": true,
+        "mouthOpenMorph": "Boca - abrir"
+      },
+      "hasBaseColorTexture": true
+    }
+  ],
+  "mouthShader": {
+    "materialExtra": "mouthInterior",
+    "attributes": {
+      "_mouth_shape": {
+        "type": "vec3",
+        "components": [
+          "referenceDistance",
+          "openDeltaZ",
+          "expectedGape"
+        ]
+      },
+      "_mouth_corner": {
+        "type": "float",
+        "meaning": "cornerFade"
+      }
+    },
+    "note": "GLTFLoader lowercases custom attribute names; values use source-space scalar distances and MUST NOT be swizzled or transformed. Pass to fragment shader as varyings before skinning. uMouthOpen must match Boca - abrir weight.",
+    "formula": "current = referenceDistance + openDeltaZ * uMouthOpen; lower = current - expectedGape * uMouthOpen; mask = (1.0 - smoothstep(-0.00025, 0.00020, current)) * smoothstep(-0.00020, 0.00025, lower) * cornerFade * min(7.0*uMouthOpen, 1.0); diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.009,0.0016,0.0022), mask);",
+    "colorSpace": "linear",
+    "fragmentInsertion": "After #include <map_fragment> and before lighting."
+  },
+  "runtime": "No baked animation. Apply delta rotations to the glTF rest quaternions listed in bones; drive morph weights from audio analysis. Source file unchanged."
+}
