@@ -80,7 +80,7 @@ npm run build
 
 Os testes usam provedores simulados e verificam contratos, limites, cancelamento, falhas, privacidade das chaves e gestos. Uma conversa real exige chaves válidas e crédito nas duas contas.
 
-Este projeto usa Vinext, React, Three.js e Cloudflare Workers. A configuração de Sites está em `.openai/hosting.json`. Na hospedagem, cadastre `DEEPSEEK_API_KEY` e `OPENAI_API_KEY` como segredos do servidor; `.env.local` é somente para desenvolvimento e não deve ser publicado. Preserve os arquivos `.blend` originais na pasta acima do projeto; o navegador usa a versão GLB exportada em `public/models/`.
+Este projeto usa Vinext, React, Three.js e Cloudflare Workers. A configuração de Sites está em `.openai/hosting.json`. Neste projeto, as chaves ficam somente em `.env.local`, para execuções locais, conforme a preferência definida. A versão hospedada permanece sem credenciais e funciona em modo de demonstração. Não envie `.env.local` para o Git ou a hospedagem. Preserve os arquivos `.blend` originais na pasta acima do projeto; o navegador usa a versão GLB exportada em `public/models/`.
 
 Referências: [DeepSeek Chat Completion](https://api-docs.deepseek.com/api/create-chat-completion/), [OpenAI — geração de voz](https://developers.openai.com/api/docs/guides/text-to-speech), [OpenAI — transcrição](https://developers.openai.com/api/docs/guides/speech-to-text), [Cloudflare — variáveis locais](https://developers.cloudflare.com/workers/local-development/environment-variables/).
 
