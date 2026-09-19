@@ -3,7 +3,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import {
   ACESFilmicToneMapping, AmbientLight, DirectionalLight, HemisphereLight, Material,
-  Mesh, MeshStandardMaterial, Object3D, PCFSoftShadowMap, PerspectiveCamera,
+  Mesh, MeshStandardMaterial, Object3D, PCFShadowMap, PerspectiveCamera,
   PlaneGeometry, Scene, ShadowMaterial, SkinnedMesh, SRGBColorSpace, Texture,
   Vector3, WebGLRenderer,
 } from "three";
@@ -87,12 +87,13 @@ const AvatarStage = forwardRef<AvatarHandle, Props>(function AvatarStage(props, 
     const scene = new Scene();
     const camera = new PerspectiveCamera(33, 1, 0.03, 25);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
-    renderer.setClearColor(0x000000, 0);
+    // Keep the CSS midnight-blue background and violet halo visible behind the model.
+    renderer.setClearColor(0x080b16, 0);
     renderer.outputColorSpace = SRGBColorSpace;
     renderer.toneMapping = ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    renderer.toneMappingExposure = 1.0;
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = PCFSoftShadowMap;
+    renderer.shadowMap.type = PCFShadowMap;
     renderer.domElement.style.width = "100%";
     renderer.domElement.style.height = "100%";
     renderer.domElement.style.display = "block";
@@ -111,9 +112,10 @@ const AvatarStage = forwardRef<AvatarHandle, Props>(function AvatarStage(props, 
     controls.minPolarAngle = Math.PI * 0.36;
     controls.maxPolarAngle = Math.PI * 0.56;
 
-    const key = new DirectionalLight(0xfff3e2, 3.0);
-    key.position.set(-2.6, 4.2, 3.5);
-    key.target.position.set(0, 1.05, 0);
+    // Neutral frontal light keeps the face readable against the dark stage.
+    const key = new DirectionalLight(0xfff7ef, 2.8);
+    key.position.set(-2.5, 3.6, 4.0);
+    key.target.position.set(0, 1.38, 0);
     key.castShadow = true;
     key.shadow.mapSize.set(1024, 1024);
     key.shadow.camera.left = -1.3;
@@ -125,12 +127,19 @@ const AvatarStage = forwardRef<AvatarHandle, Props>(function AvatarStage(props, 
     key.shadow.bias = -0.0002;
     key.shadow.normalBias = 0.012;
     key.shadow.radius = 4;
-    const fill = new DirectionalLight(0xe7efff, 1.15);
-    fill.position.set(2.5, 2.1, 2.8);
-    const rim = new DirectionalLight(0xffe0b1, 1.65);
-    rim.position.set(0.8, 3.1, -2.3);
-    scene.add(key, key.target, fill, rim, new HemisphereLight(0xfff7e9, 0x787c83, 1.75), new AmbientLight(0xffffff, 0.2));
-    const floor = new Mesh(new PlaneGeometry(12, 12), new ShadowMaterial({ opacity: 0.18 }));
+    const fill = new DirectionalLight(0xe1eaff, 1.05);
+    fill.position.set(2.6, 2.3, 4.2);
+    fill.target.position.set(0, 1.35, 0);
+    // Violet backlights separate the hair, shoulders and coat from the background.
+    const rim = new DirectionalLight(0x9d77ff, 3.8);
+    rim.position.set(-1.4, 2.7, -1.8);
+    rim.target.position.set(0, 1.3, 0);
+    const edge = new DirectionalLight(0x828bff, 1.35);
+    edge.position.set(2.2, 2.0, -1.4);
+    edge.target.position.set(0, 1.3, 0);
+    scene.add(key, key.target, fill, fill.target, rim, rim.target, edge, edge.target,
+      new HemisphereLight(0xd7e0f6, 0x171426, 1.35), new AmbientLight(0xffffff, 0.16));
+    const floor = new Mesh(new PlaneGeometry(12, 12), new ShadowMaterial({ opacity: 0.28 }));
     floor.rotation.x = -Math.PI / 2;
     floor.position.y = -0.003;
     floor.receiveShadow = true;
@@ -141,11 +150,14 @@ const AvatarStage = forwardRef<AvatarHandle, Props>(function AvatarStage(props, 
     let framing = true;
     const frameView = (view: Props["view"], immediate = false) => {
       const portrait = view === "portrait";
-      const height = portrait ? 1.48 : 2.14;
-      // Keep the raised hand within the frame even in a narrow mobile viewport.
-      const distance = Math.max(height, 1.22 / Math.max(camera.aspect, 0.3)) / (2 * Math.tan(camera.fov * Math.PI / 360));
-      desiredTarget.set(0, portrait ? 1.27 : 0.96, 0);
-      desiredPosition.set(0.035, desiredTarget.y + 0.055, distance);
+      // Manifest height is 1.89921 m; the highest vertex sits at Z = 0.07344 m.
+      // Anchor the head at 4.5% from the top, including when a narrow viewport
+      // needs extra horizontal room for the raised hand (up to X = -0.60 m).
+      const height = Math.max(portrait ? 1.24 : 2.14, 1.32 / Math.max(camera.aspect, 0.3));
+      const distance = height / (2 * Math.tan(camera.fov * Math.PI / 360));
+      const targetY = portrait ? 1.89921 - height * 0.455 : 0.96;
+      desiredTarget.set(0, targetY, 0.075);
+      desiredPosition.set(0, targetY, distance + 0.075);
       controls.minDistance = distance * 0.68;
       controls.maxDistance = distance * 1.42;
       framing = true;

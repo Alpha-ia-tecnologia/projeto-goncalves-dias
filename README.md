@@ -1,4 +1,4 @@
-# Gonçalves Dias — presença digital
+# Acervo Vivo — Gonçalves Dias
 
 Aplicação web com o modelo 3D do projeto Blender, conversa em português pelo DeepSeek, voz sintetizada pela OpenAI, movimento de boca durante o áudio e aceno ao ouvir cumprimentos como “olá” ou “oi, tudo bem?”. O personagem é uma representação artística, com voz gerada por IA.
 

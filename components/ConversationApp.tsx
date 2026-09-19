@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { ArrowUp, ArrowUpRight, BookOpen, Check, ChevronRight, CircleHelp, Focus, Hand, LoaderCircle, Mic, RotateCcw, Settings2, Sparkles, Square, UserRound, Volume2, VolumeX, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type CSSProperties } from 'react';
+import { BookOpen, Check, Focus, Hand, Info, LoaderCircle, MessageCircle, Mic, RotateCcw, SendHorizontal, Settings2, Square, UserRound, Volume2, VolumeX, X } from 'lucide-react';
 import Image from 'next/image';
 import Link from 'next/link';
 import AvatarStage, { type AvatarHandle } from './AvatarStage';
@@ -55,6 +55,7 @@ export default function ConversationApp() {
   const microphone = useRef<MediaStream | null>(null);
   const recordTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const chatEnd = useRef<HTMLDivElement>(null);
+  const historyToggle = useRef<HTMLButtonElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const lastSpeech = useRef<{ bytes: ArrayBuffer; gesture: Gesture; messageId: string } | null>(null);
   const lastLevelUpdate = useRef(0);
@@ -75,6 +76,7 @@ export default function ConversationApp() {
   const [lastSpokenId, setLastSpokenId] = useState('');
   const [modal, setModal] = useState<'settings' | 'about'>('settings');
   const [avatarVersion, setAvatarVersion] = useState(0);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const demoMode = status?.mode !== 'live';
   const busy = phase !== 'idle';
 
@@ -123,9 +125,11 @@ export default function ConversationApp() {
     };
   }, [refreshStatus]);
 
-  useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, [messages, phase]);
+  useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, [messages, phase, historyOpen]);
   const onAvatarReady = useCallback(() => { setReady(true); setModelError(''); }, []);
   const onAvatarError = useCallback((message: string) => { setModelError(message); setReady(false); }, []);
+
+  function closeHistory() { setHistoryOpen(false); historyToggle.current?.focus(); }
 
   function openModal(kind: 'settings' | 'about') {
     setModal(kind);
@@ -351,65 +355,70 @@ export default function ConversationApp() {
   function submit(event: FormEvent) { event.preventDefault(); if (!busy) void sendMessage(input); }
   function clearChat() { stop(); setMessages([welcome]); setError(''); setLastSpokenId(''); lastSpeech.current = null; }
 
+  const latestReply = messages.filter(message => message.role === 'assistant' && message.id !== 'welcome').at(-1);
+
   return (
     <div className="app-shell">
       <header className="site-header">
-        <Link href="/" className="wordmark" aria-label="Gonçalves Dias, início"><span className="monogram">gd<span>.</span></span><span className="wordmark-text">Gonçalves Dias<small>PRESENÇA DIGITAL</small></span></Link>
+        <Link href="/" className="wordmark" aria-label="Acervo Vivo, início"><BookOpen className="brand-symbol" size={43} strokeWidth={2.6} /><span className="wordmark-text">Acervo Vivo</span></Link>
         <nav className="header-actions" aria-label="Navegação principal">
-          <button className="quiet-button how-button" onClick={() => openModal('about')}><CircleHelp size={16} /> Como funciona</button>
-          <span className={`connection-pill ${!demoMode ? 'connected' : ''}`}><span className="status-dot" />{!status ? 'Verificando conexão' : demoMode ? 'Demonstração' : 'Conectado'}</span>
-          <button className="icon-button settings-button" aria-label="Configurar conexões" onClick={() => openModal('settings')}><Settings2 size={19} /></button>
+          <span className="current-character">Gonçalves Dias</span><span className="header-divider" aria-hidden="true" />
+          <button className="profile-button" aria-label="Sobre o Acervo Vivo" title="Sobre a experiência" onClick={() => openModal('about')}><UserRound size={22} strokeWidth={2.2} /></button>
         </nav>
       </header>
 
-      <main>
-        <section className="intro" aria-labelledby="page-title">
-          <div><p className="eyebrow"><span /> LITERATURA, AGORA PRESENTE</p><h1 id="page-title">Uma conversa através do <em>tempo.</em></h1></div>
-          <p className="intro-copy">Uma presença em 3D que escuta, conversa<br className="desktop-break" /> e responde com voz e gestos.</p>
+      <main className={`experience-stage ${historyOpen ? 'drawer-open' : ''}`} aria-labelledby="page-title">
+        <div className="stage-backdrop" aria-hidden="true" />
+        <div className="stage-view">
+          <AvatarStage key={avatarVersion} ref={avatar} view={view} motionEnabled={motionEnabled} onReady={onAvatarReady} onError={onAvatarError} />
+          {!ready && <div className="avatar-loading"><Image src="/models/avatar-poster.webp" alt="" width={640} height={800} unoptimized /><div className="loading-label" role="status">{modelError ? <><span>Não foi possível abrir a visualização 3D.</span><button className="small-button" onClick={() => { setModelError(''); setAvatarVersion(value => value + 1); }}>Tentar novamente</button></> : <><LoaderCircle size={17} className="spin" /><span>Preparando o personagem…</span></>}</div></div>}
+        </div>
+        <div className="scene-heading"><h1 id="page-title">Gonçalves Dias</h1><p>Poeta e escritor</p></div>
+        <div className="scene-actions">
+          <button className={`connection-pill ${!demoMode ? 'connected' : ''}`} onClick={() => openModal('settings')} title="Ver conexões"><span className="status-dot" />{statusError ? 'Sem conexão' : !status ? 'Conectando' : demoMode ? 'Demonstração' : 'Conectado'}</button>
+          <button ref={historyToggle} className="icon-button" aria-label={historyOpen ? 'Fechar histórico da conversa' : 'Abrir histórico da conversa'} aria-expanded={historyOpen} aria-controls={historyOpen ? 'conversation-history' : undefined} title="Histórico da conversa" onClick={() => setHistoryOpen(value => !value)}><MessageCircle size={20} /></button>
+          <button className="icon-button" aria-label="Configurar conexões" title="Configurações" onClick={() => openModal('settings')}><Settings2 size={19} /></button>
+        </div>
+
+        <div className="scene-tools" aria-label="Controles do personagem">
+          <button className="icon-button" aria-label={view === 'portrait' ? 'Ver corpo inteiro' : 'Aproximar personagem'} title={view === 'portrait' ? 'Ver corpo inteiro' : 'Aproximar personagem'} onClick={() => setView(value => value === 'portrait' ? 'full' : 'portrait')}><Focus size={18} /></button>
+          <button className="icon-button" aria-label="Restaurar enquadramento" title="Restaurar enquadramento" onClick={() => avatar.current?.resetView()}><RotateCcw size={17} /></button>
+          <button className={`icon-button ${!motionEnabled ? 'muted-control' : ''}`} aria-label={motionEnabled ? 'Desativar gestos automáticos' : 'Ativar gestos automáticos'} title="Gestos do personagem" aria-pressed={motionEnabled} onClick={() => setMotionEnabled(value => !value)}><Hand size={18} /></button>
+          <span className="scene-hint">Arraste para explorar</span>
+        </div>
+
+        <section className="conversation-dock" aria-label="Fale com Gonçalves Dias">
+          {latestReply && !historyOpen && <div className="response-caption" aria-live="polite" aria-atomic="true"><span className="caption-speaker">Gonçalves Dias{latestReply.demo && <span className="demo-tag">Demonstração</span>}</span><p>{latestReply.text}</p>{latestReply.id === lastSpokenId && <button className="replay-button" disabled={busy || !ready || !voiceEnabled} onClick={() => void replay()}><Volume2 size={13} /> Ouvir novamente</button>}</div>}
+          {error && <div className="error-notice" role="alert"><span>{error}</span><button aria-label="Fechar aviso" onClick={() => setError('')}><X size={16} /></button></div>}
+          <div className="voice-control">
+            <button type="button" className={`talk-button ${phase === 'recording' ? 'recording' : phase === 'speaking' ? 'speaking' : busy ? 'working' : ''}`} style={{ '--audio-level': level } as CSSProperties} disabled={!busy && (!status || !ready)} aria-describedby="voice-label" aria-label={phase === 'recording' ? 'Parar gravação e enviar' : busy ? 'Interromper' : demoMode ? 'Configurar voz para usar o microfone' : 'Gravar mensagem de voz'} onClick={phase === 'recording' ? finishRecording : busy ? stop : () => void startRecording()}>
+              {phase === 'recording' ? <Square size={32} fill="currentColor" /> : phase === 'speaking' ? <span className="voice-bars" aria-hidden="true">{[.55,.8,1,.7,.45].map((height,index) => <i key={index} style={{ height: `${10 + level * 32 * height}px` }} />)}</span> : busy ? <LoaderCircle size={42} className="spin" /> : <Mic size={45} strokeWidth={2.3} />}
+            </button>
+            <span id="voice-label" role="status">{modelError ? 'Visualização indisponível' : !ready ? 'Preparando o personagem…' : phase === 'idle' ? 'Clique para falar' : phase === 'recording' ? `Ouvindo você · ${recordSeconds}s / 25s` : phases[phase]}</span>
+          </div>
+          <form onSubmit={submit} className={`composer ${phase === 'recording' ? 'recording' : ''}`}>
+            <label htmlFor="message-input" className="sr-only">Sua mensagem para Gonçalves Dias</label>
+            <textarea id="message-input" placeholder="Ou digite sua mensagem..." value={input} onChange={event => setInput(event.target.value)} maxLength={2000} rows={1} disabled={busy || !status || !ready} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!busy) void sendMessage(input); } }} />
+            <button className="send-button" type="submit" disabled={busy || !input.trim() || !status || !ready} aria-label="Enviar mensagem"><SendHorizontal size={27} strokeWidth={1.8} /></button>
+          </form>
+          <div className="dock-footer"><button className="quiet-button" onClick={toggleVoice} aria-pressed={voiceEnabled}>{voiceEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}{voiceEnabled ? 'Voz ativada' : 'Só texto'}</button><span className="voice-disclosure">{demoMode ? 'Voz de demonstração' : 'Voz gerada por IA'}</span><button className="quiet-button" onClick={() => openModal('about')} aria-label="Sobre a experiência"><Info size={14} /><span>Sobre</span></button></div>
         </section>
 
-        <div className="experience-grid">
-          <section className="stage-card" aria-label="Personagem 3D interativo">
-            <div className="stage-top"><div><span className="stage-label">SEU ANFITRIÃO</span><h2>Gonçalves Dias</h2></div><span className="live-caption"><span className={`status-dot ${busy ? 'pulsing' : ''}`} />{ready ? phases[phase] : modelError ? 'Visualização indisponível' : 'Preparando o personagem'}</span></div>
-            <div className="stage-backdrop" aria-hidden="true"><div className="stage-orbit orbit-one" /><div className="stage-orbit orbit-two" /><span>G.</span></div>
-            <div className="stage-view">
-              <AvatarStage key={avatarVersion} ref={avatar} view={view} motionEnabled={motionEnabled} onReady={onAvatarReady} onError={onAvatarError} />
-              {!ready && <div className="avatar-loading"><Image src="/models/avatar-poster.webp" alt="Retrato de Gonçalves Dias" width={640} height={800} unoptimized /><div className="loading-label">{modelError ? <><span>Não foi possível abrir a visualização 3D.</span><button className="small-button" onClick={() => { setModelError(''); setAvatarVersion(value => value + 1); }}>Tentar novamente</button></> : <><LoaderCircle size={17} className="spin" /><span>Preparando sua presença…</span></>}</div></div>}
-            </div>
-            <div className="stage-bottom">
-              <div className="view-control" aria-label="Enquadramento do personagem"><button className={view === 'portrait' ? 'selected' : ''} aria-pressed={view === 'portrait'} onClick={() => setView('portrait')} title="Aproximar rosto"><Focus size={17} /><span>Retrato</span></button><button className={view === 'full' ? 'selected' : ''} aria-pressed={view === 'full'} onClick={() => setView('full')} title="Ver corpo inteiro"><UserRound size={17} /><span>Corpo inteiro</span></button></div>
-              <div className="stage-tools"><button className="icon-button" aria-label="Restaurar enquadramento" onClick={() => avatar.current?.resetView()}><RotateCcw size={17} /></button><button className={`icon-button ${!motionEnabled ? 'muted-control' : ''}`} aria-label={motionEnabled ? 'Desativar gestos automáticos' : 'Ativar gestos automáticos'} aria-pressed={motionEnabled} onClick={() => setMotionEnabled(value => !value)}><Hand size={18} /></button></div>
-            </div>
-            <div className="stage-caption"><span className="waveform" aria-hidden="true">{[.5,.8,1,.7,.9,.45].map((height,index) => <i key={index} style={{ height: `${4 + level * 20 * height}px` }} />)}</span><span>{phase === 'speaking' ? 'Voz e movimento em sintonia' : 'Arraste para explorar · Role para aproximar'}</span></div>
-          </section>
-
-          <section className="chat-card" aria-label="Conversa com o personagem">
-            <header className="chat-header"><div className="chat-symbol"><Sparkles size={20} /></div><div><h2>Vamos conversar?</h2><p>Uma ideia pode atravessar séculos.</p></div><button className="icon-button" onClick={clearChat} aria-label="Limpar conversa e começar novamente" title="Nova conversa"><RotateCcw size={16} /></button></header>
-            {(demoMode || statusError) && <div className="demo-notice"><div><span className="notice-dot" /><strong>{statusError ? 'Conexão indisponível' : 'Uma prévia para você explorar'}</strong><p>{statusError ? 'Verifique a conexão para continuar.' : 'Respostas prontas e voz local. Conecte as APIs para conversar livremente.'}</p></div><button onClick={() => openModal('settings')} aria-label="Configurar as conexões"><ArrowUpRight size={18} /></button></div>}
-            <div className="messages" role="log" aria-label="Histórico da conversa" aria-live="polite" aria-relevant="additions text">
-              <div className="conversation-date"><span /> A CONVERSA COMEÇA AQUI <span /></div>
-              {messages.map(message => <article key={message.id} className={`message message-${message.role}`}><div className="message-meta">{message.role === 'assistant' ? <><span className="mini-monogram">g.</span>Gonçalves Dias{message.demo && <span className="demo-tag">prévia</span>}</> : 'Você'}</div><div className="message-text">{message.text}</div>{message.id === lastSpokenId && <button className="replay-button" disabled={busy || !ready || !voiceEnabled} onClick={() => void replay()}><Volume2 size={13} /> Ouvir novamente</button>}</article>)}
-              {(phase === 'thinking' || phase === 'transcribing') && <div className="typing-indicator" aria-label={phases[phase]}><span /><span /><span /><small>{phase === 'transcribing' ? 'Entendendo sua mensagem…' : 'Um instante…'}</small></div>}
-              <div ref={chatEnd} />
-            </div>
-            <div className="chat-bottom">
-              {messages.length < 3 && <div className="suggestions" aria-label="Sugestões de conversa">{[{text:'Olá, tudo bem?',icon:Hand},{text:'Fale sobre poesia',icon:BookOpen}].map(({text,icon:Icon}) => <button key={text} disabled={busy || !status || !ready} onClick={() => void sendMessage(text)}><Icon size={14} />{text}<ChevronRight size={13} /></button>)}</div>}
-              {error && <div className="error-notice" role="alert"><span>{error}</span><button aria-label="Fechar aviso" onClick={() => setError('')}><X size={14} /></button></div>}
-              {busy && <div className="activity-row"><span>{phase === 'recording' ? `Gravando · ${recordSeconds}s / 25s` : phases[phase]}</span><button onClick={phase === 'recording' ? finishRecording : stop}><Square size={11} fill="currentColor" />{phase === 'recording' ? 'Enviar áudio' : 'Interromper'}</button></div>}
-              <form onSubmit={submit} className={`composer ${phase === 'recording' ? 'recording' : ''}`}>
-                <label htmlFor="message-input" className="sr-only">Sua mensagem para Gonçalves Dias</label>
-                <textarea id="message-input" placeholder="Diga olá ou compartilhe uma ideia…" value={input} onChange={event => setInput(event.target.value)} maxLength={2000} rows={2} disabled={busy || !status || !ready} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!busy) void sendMessage(input); } }} />
-                <div className="composer-toolbar"><button type="button" className={`icon-button mic-button ${phase === 'recording' ? 'recording' : ''}`} disabled={(busy && phase !== 'recording') || !status || !ready} aria-label={phase === 'recording' ? 'Parar gravação e enviar' : demoMode ? 'Configurar voz para usar o microfone' : 'Gravar mensagem de voz'} onClick={phase === 'recording' ? finishRecording : () => void startRecording()}>{phase === 'recording' ? <Square size={17} /> : <Mic size={18} />}</button><span>{phase === 'recording' ? 'Estou ouvindo…' : 'Enter para enviar'}</span><button className="send-button" type="submit" disabled={busy || !input.trim() || !status || !ready} aria-label="Enviar mensagem"><ArrowUp size={20} /></button></div>
-              </form>
-              <div className="audio-disclosure"><button onClick={toggleVoice} aria-pressed={voiceEnabled}>{voiceEnabled ? <Volume2 size={13} /> : <VolumeX size={13} />}{voiceEnabled ? 'Voz ativada' : 'Só texto'}</button><span>Voz {demoMode ? 'local de demonstração' : 'gerada por IA'}</span></div>
-            </div>
-          </section>
-        </div>
-        <footer className="page-footer"><span>Uma interpretação artística. Uma nova forma de conversar.</span><button onClick={() => openModal('about')}>Conheça a experiência <ArrowUpRight size={13} /></button></footer>
+        {historyOpen && <aside id="conversation-history" className="conversation-panel" aria-label="Histórico da conversa" onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); closeHistory(); } }}>
+          <header className="conversation-panel-header"><h2>Nossa conversa</h2><button className="icon-button" onClick={clearChat} aria-label="Limpar conversa e começar novamente" title="Nova conversa"><RotateCcw size={16} /></button><button className="icon-button" onClick={closeHistory} aria-label="Fechar histórico"><X size={19} /></button></header>
+          {(demoMode || statusError) && <div className="demo-notice"><p>{statusError ? 'Verifique a conexão para continuar.' : 'Respostas prontas e voz local. Conecte as APIs para conversar livremente.'}</p><button onClick={() => openModal('settings')}>Ver conexões</button></div>}
+          <div className="messages" role="log" aria-label="Mensagens da conversa" aria-live="polite" aria-relevant="additions text">
+            <div className="conversation-date">A CONVERSA COMEÇA AQUI</div>
+            {messages.map(message => <article key={message.id} className={`message message-${message.role}`}><div className="message-meta">{message.role === 'assistant' ? <>Gonçalves Dias{message.demo && <span className="demo-tag">prévia</span>}</> : 'Você'}</div><div className="message-text">{message.text}</div>{message.id === lastSpokenId && <button className="replay-button" disabled={busy || !ready || !voiceEnabled} onClick={() => void replay()}><Volume2 size={13} /> Ouvir novamente</button>}</article>)}
+            {(phase === 'thinking' || phase === 'transcribing') && <div className="typing-indicator"><LoaderCircle size={14} className="spin" /><small>{phase === 'transcribing' ? 'Entendendo sua mensagem…' : 'Um instante…'}</small></div>}
+            <div ref={chatEnd} className="chat-end" />
+          </div>
+          {messages.length < 3 && <div className="suggestions" aria-label="Sugestões de conversa">{[{text:'Olá, tudo bem?',icon:Hand},{text:'Fale sobre poesia',icon:BookOpen}].map(({text,icon:Icon}) => <button key={text} disabled={busy || !status || !ready} onClick={() => void sendMessage(text)}><Icon size={14} />{text}</button>)}</div>}
+        </aside>}
       </main>
 
-      <dialog ref={dialog} className="info-dialog" onClick={event => { if (event.target === event.currentTarget) dialog.current?.close(); }}>
-        <div className="dialog-content"><button className="dialog-close icon-button" aria-label="Fechar janela" onClick={() => dialog.current?.close()}><X size={20} /></button><p className="eyebrow">{modal === 'settings' ? 'CONEXÕES' : 'SOBRE A EXPERIÊNCIA'}</p><h2>{modal === 'settings' ? 'Dê voz à conversa.' : 'Uma presença feita de possibilidades.'}</h2>
+      <dialog ref={dialog} className="info-dialog" aria-labelledby="info-dialog-title" onClick={event => { if (event.target === event.currentTarget) dialog.current?.close(); }}>
+        <div className="dialog-content"><button className="dialog-close icon-button" aria-label="Fechar janela" onClick={() => dialog.current?.close()}><X size={20} /></button><p className="eyebrow">{modal === 'settings' ? 'CONEXÕES' : 'SOBRE A EXPERIÊNCIA'}</p><h2 id="info-dialog-title">{modal === 'settings' ? 'Dê voz à conversa.' : 'Uma presença feita de possibilidades.'}</h2>
           {modal === 'settings' ? <><p className="dialog-intro">O DeepSeek cria as respostas. A OpenAI transforma o texto em voz. As chaves ficam no servidor, protegidas do navegador.</p><div className="service-list">{[{name:'DeepSeek',description:'Inteligência da conversa',active:status?.deepseek},{name:'OpenAI',description:'Voz e transcrição',active:status?.openai}].map(service => <div className="service-row" key={service.name}><div><strong>{service.name}</strong><span>{service.description}</span></div><span className={`service-state ${service.active ? 'configured' : ''}`}>{service.active ? <><Check size={13} />Configurado</> : 'Aguardando chave'}</span></div>)}</div><div className="setup-guide"><h3>Configuração local</h3><p>Preencha estas variáveis em <code>web/.env.local</code> e reinicie o aplicativo. Não coloque as chaves em mensagens ou no código público.</p><pre>DEEPSEEK_API_KEY=sua_chave{ '\n' }OPENAI_API_KEY=sua_chave</pre><p>Na versão hospedada, configure as mesmas variáveis no ambiente do servidor.</p></div><button className="primary-button" onClick={() => void refreshStatus()}><RotateCcw size={16} />Verificar conexão</button><p className="dialog-note">Sem as duas conexões, a prévia usa respostas prontas e gravações sintéticas locais. Não há consulta aos modelos nesse modo.</p></> : <><p className="dialog-intro">Gonçalves Dias ganha uma interpretação digital para uma conversa próxima, com voz, expressão e movimento.</p><div className="how-it-works"><div><span>01</span><p><strong>Você inicia a conversa.</strong>Digite uma mensagem ou use o microfone quando as conexões estiverem ativas.</p></div><div><span>02</span><p><strong>A resposta ganha voz.</strong>DeepSeek produz o texto e a OpenAI gera uma voz sintética em português.</p></div><div><span>03</span><p><strong>O personagem responde.</strong>O áudio controla a abertura da boca. Saudações como “olá” e “oi, tudo bem?” também acionam um aceno.</p></div></div><p className="dialog-note">Esta é uma representação artística com IA, não uma gravação ou uma fala histórica autêntica. A conversa fica apenas nesta sessão; mensagens e áudios enviados às APIs são processados pelos respectivos provedores.</p></>}
         </div>
       </dialog>
