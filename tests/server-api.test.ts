@@ -1,12 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
-import { clientIdentifier, createApiHandlers, gestureIntent, getStatus, parseModelResponse, RateLimiter, readConfig, validateChat } from "../lib/server/api";
+import { clientIdentifier, createApiHandlers, gestureIntent, getStatus, parseAgentResponse, RateLimiter, readConfig, validateChat } from "../lib/server/api";
 
 const configured = readConfig({ DEEPSEEK_API_KEY: "deepseek-test-only", OPENAI_API_KEY: "openai-test-only" });
-const completion = (text = "Olá! Que bom conversar com você.", gesture = "none") => ({ choices: [{ message: { content: JSON.stringify({ text, gesture }) } }] });
+const structuredReply = (text = "Eu sou Gonçalves Dias.", gesture = "none") => ({ text, gesture });
+const agentCompletion = (text = "Eu sou Gonçalves Dias e recebo você com alegria.", gesture = "none") => ({
+  id: "chatcmpl-api-test",
+  object: "chat.completion",
+  created: 1_760_000_000,
+  model: "deepseek-flash",
+  choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{
+    id: "call_poet_final", type: "function", function: { name: "resposta_do_poeta", arguments: JSON.stringify({ text, gesture }) },
+  }] }, finish_reason: "tool_calls" }],
+  usage: { prompt_tokens: 30, completion_tokens: 20, total_tokens: 50 },
+});
 const post = (value: unknown, headers: HeadersInit = {}, signal?: AbortSignal) => new Request("http://localhost/api/chat", {
   method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(value), signal,
 });
-const setup = (fetcher = vi.fn(async () => Response.json(completion()))) => ({
+const setup = (fetcher = vi.fn(async () => Response.json(agentCompletion()))) => ({
   fetcher,
   api: createApiHandlers({ config: () => configured, fetch: fetcher }),
 });
@@ -38,15 +48,15 @@ describe("configuration and input boundaries", () => {
 
   it.each(["Não acene", "Oi, não quero que acene", "Sem acenar", "Nunca dê tchau", "Pare de acenar"])('respects "%s"', message => {
     expect(gestureIntent(message)).toMatchObject({ wave: false, forbidWave: true });
-    expect(parseModelResponse(completion("Tudo bem.", "wave"), message).gesture).toBe("none");
+    expect(parseAgentResponse(structuredReply("Eu estou bem.", "wave"), message).gesture).toBe("none");
   });
 
-  it("enforces greeting gestures and validates provider JSON", () => {
-    expect(parseModelResponse(completion("Olá.", "none"), "Oi").gesture).toBe("wave");
-    expect(() => parseModelResponse(completion("Olá.", "jump"), "Oi")).toThrow();
-    expect(() => parseModelResponse({ choices: [{ message: { content: JSON.stringify({ text: "Oi", gesture: ["wave"] }) } }] }, "Oi")).toThrow();
-    expect(() => parseModelResponse({ choices: [{ message: { content: "not JSON" } }] }, "Oi")).toThrow();
-    expect(parseModelResponse(completion("a ".repeat(1500)), "poesia").text.length).toBeLessThanOrEqual(1600);
+  it("enforces greeting gestures and validates the agent result", () => {
+    expect(parseAgentResponse(structuredReply("Eu saúdo você.", "none"), "Oi").gesture).toBe("wave");
+    expect(() => parseAgentResponse(structuredReply("Eu saúdo você.", "jump"), "Oi")).toThrow();
+    expect(() => parseAgentResponse({ text: "Oi", gesture: ["wave"] }, "Oi")).toThrow();
+    expect(() => parseAgentResponse("not JSON", "Oi")).toThrow();
+    expect(parseAgentResponse(structuredReply("Eu " + "a ".repeat(1500)), "poesia").text.length).toBeLessThanOrEqual(1600);
   });
 });
 
@@ -66,11 +76,12 @@ describe("provider routes", () => {
     const { api, fetcher } = setup();
     const response = await api.chat(post({ message: "Olá", history: [{ role: "assistant", content: "Bem-vindo" }] }));
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ text: "Olá! Que bom conversar com você.", gesture: "wave", provider: "deepseek" });
+    expect(await response.json()).toEqual({ text: "Eu sou Gonçalves Dias e recebo você com alegria.", gesture: "wave", provider: "deepseek" });
     const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://api.deepseek.com/chat/completions");
     const payload = JSON.parse(init.body as string);
-    expect(payload).toMatchObject({ model: "deepseek-flash", thinking: { type: "disabled" }, response_format: { type: "json_object" } });
+    expect(payload).toMatchObject({ model: "deepseek-flash", thinking: { type: "disabled" } });
+    expect(payload.tools.map((tool: { function: { name: string } }) => tool.function.name)).toEqual(expect.arrayContaining(["consultar_acervo", "resposta_do_poeta"]));
     expect(payload.messages.map((message: { role: string }) => message.role)).toEqual(["system", "assistant", "user"]);
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
@@ -85,6 +96,18 @@ describe("provider routes", () => {
     expect(body).not.toContain("secret provider response");
   });
 
+  it("returns a bounded, safe failure when the agent cannot repair its persona", async () => {
+    const fetcher = vi.fn(async () => Response.json(agentCompletion("Gonçalves Dias foi um poeta brasileiro.")));
+    const { api } = setup(fetcher);
+    const response = await api.chat(post({ message: "Quem é você?" }));
+    expect(response.status).toBe(502);
+    const result = await response.json();
+    expect(result).toMatchObject({ error: { code: "AGENT_LIMIT" } });
+    expect(JSON.stringify(result)).not.toContain("Gonçalves Dias foi");
+    expect(JSON.stringify(result)).not.toContain("test-only");
+    expect(fetcher.mock.calls.length).toBeGreaterThan(1);
+    expect(fetcher.mock.calls.length).toBeLessThanOrEqual(4);
+  });
   it("validates JSON and streamed request size before calling a provider", async () => {
     const { api, fetcher } = setup();
     const malformed = new Request("http://localhost/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{" });
@@ -158,7 +181,7 @@ describe("request protection and cancellation", () => {
 
   it("enforces and resets limits, with Retry-After on API responses", async () => {
     let now = 0;
-    const api = createApiHandlers({ config: () => configured, fetch: async () => Response.json(completion()), limiter: new RateLimiter(1, 60_000, () => now) });
+    const api = createApiHandlers({ config: () => configured, fetch: async () => Response.json(agentCompletion()), limiter: new RateLimiter(1, 60_000, () => now) });
     expect((await api.chat(post({ message: "Oi" }))).status).toBe(200);
     const denied = await api.chat(post({ message: "Oi" }, { "x-forwarded-for": "198.51.100.1" }));
     expect(denied.status).toBe(429);
@@ -179,6 +202,31 @@ describe("request protection and cancellation", () => {
     expect(await response.json()).toMatchObject({ error: { code: "PROVIDER_TIMEOUT" } });
   });
 
+  it("applies one deadline to the whole collection lookup and response loop", async () => {
+    let turns = 0;
+    const signals: AbortSignal[] = [];
+    const api = createApiHandlers({ config: () => configured, timeoutMs: 200, fetch: async (_url, init) => {
+      turns += 1;
+      const turn = turns;
+      const signal = init!.signal as AbortSignal;
+      signals.push(signal);
+      return new Promise<Response>((resolve, reject) => {
+        const cancel = () => { clearTimeout(timer); reject(new DOMException("aborted", "AbortError")); };
+        const timer = setTimeout(() => {
+          signal.removeEventListener("abort", cancel);
+          const reply = agentCompletion("Eu nasci no Maranhão, em 1823.");
+          if (turn === 1) reply.choices[0].message.tool_calls[0].function = { name: "consultar_acervo", arguments: JSON.stringify({ topic: "vida" }) };
+          resolve(Response.json(reply));
+        }, turn === 1 ? 80 : 160);
+        signal.addEventListener("abort", cancel, { once: true });
+      });
+    } });
+    const response = await api.chat(post({ message: "Onde você nasceu?" }));
+    expect(turns).toBe(2);
+    expect(response.status).toBe(504);
+    expect(signals[1].aborted).toBe(true);
+    expect(await response.json()).toMatchObject({ error: { code: "PROVIDER_TIMEOUT" } });
+  });
   it("propagates user cancellation to provider fetch", async () => {
     const controller = new AbortController();
     let upstreamSignal: AbortSignal | undefined;

@@ -1,6 +1,6 @@
 # Acervo Vivo — Gonçalves Dias
 
-Aplicação web com o modelo 3D do projeto Blender, conversa em português pelo DeepSeek, voz sintetizada pela OpenAI, movimento de boca durante o áudio e aceno ao ouvir cumprimentos como “olá” ou “oi, tudo bem?”. O personagem é uma representação artística, com voz gerada por IA.
+Aplicação web com o modelo 3D do projeto Blender, conversa em português com um agente LangChain usando DeepSeek, voz sintetizada pela OpenAI, movimento de boca durante o áudio e aceno ao ouvir cumprimentos como “olá” ou “oi, tudo bem?”. O personagem é uma representação artística, com voz gerada por IA.
 
 ## Executar no Windows
 
@@ -33,12 +33,26 @@ Sem as duas chaves, a interface oferece uma demonstração identificada, com res
 ## Conversa, voz e animação
 
 1. Uma mensagem digitada segue para `/api/chat`; uma gravação passa primeiro por `/api/transcribe`.
-2. O servidor envia a mensagem e um histórico limitado ao DeepSeek. O retorno é validado como texto e gesto.
+2. O servidor executa um agente LangChain com DeepSeek, histórico limitado e a ferramenta consultar_acervo. O agente consulta fatos selecionados sobre vida, obras e poesia, e entrega uma fala em primeira pessoa e um gesto validados.
 3. O texto da resposta segue para `/api/speech`, que solicita áudio WAV ao `gpt-4o-mini-tts`.
 4. O navegador reproduz o WAV e analisa sua amplitude para abrir/fechar a boca do modelo. Esse movimento acompanha o áudio, mas não é uma sincronização fonética de visemas.
 5. “Olá”, “oi”, “bom dia” e pedidos de aceno disparam o gesto `wave`. A regra considera palavras completas, aceita acentos e respeita “não acene”.
 
 Os controles de demonstração permitem conferir o modelo, a boca e os gestos antes de configurar os serviços. A síntese real usa a voz `cedar` por padrão; o modelo e a voz são configuráveis. O aplicativo não tenta reproduzir a voz histórica de Gonçalves Dias.
+
+## O agente Gonçalves Dias
+
+O servidor usa `createAgent` do LangChain e `ChatDeepSeek`. A personagem fala em primeira pessoa: “Nasci…”, “Escrevi…” e “Minha poesia…”. O aviso de interpretação artística permanece na interface; em perguntas explícitas sobre autenticidade, o poeta também explica sua natureza digital em primeira pessoa.
+
+A ferramenta `consultar_acervo` consulta cinco temas locais: vida, obras, Canção do exílio, estilo e contexto. O acervo cita a Academia Brasileira de Letras, a Biblioteca Nacional e a Brasiliana USP. Ele é pequeno e curado, sem pesquisa aberta na internet: detalhes não cobertos devem receber uma admissão de incerteza. Apenas a primeira estrofe verificada de Canção do exílio está disponível para recitação.
+
+A saída estruturada `resposta_do_poeta` contém `text` e `gesture`. Antes de liberar uma fala, o servidor valida tamanho, gesto e marcas linguísticas de primeira pessoa. Respostas que falham voltam ao agente para correção. A execução permite até quatro chamadas ao modelo e três consultas a ferramentas, com prazo único de 45 segundos e cancelamento pelo usuário. Esses limites incluem tentativas de correção; não há repetição ilimitada nem resposta simulada no lugar de uma falha real.
+
+O histórico da sessão é enviado em cada pedido. O agente é criado por solicitação e não compartilha memória persistente entre visitantes. A implementação não exige conta LangSmith nem ativa rastreamento externo.
+
+Código: `lib/server/poet-agent.ts`, `poet-persona.ts` e `poet-knowledge.ts`. As demonstrações locais também usam primeira pessoa, mas não executam LangChain nem consultam DeepSeek.
+
+Referências técnicas: [agentes LangChain](https://docs.langchain.com/oss/javascript/langchain/agents), [ChatDeepSeek](https://docs.langchain.com/oss/javascript/integrations/chat/deepseek), [saída estruturada](https://docs.langchain.com/oss/javascript/langchain/structured-output).
 
 ## API interna
 
@@ -49,7 +63,7 @@ Os controles de demonstração permitem conferir o modelo, a boca e os gestos an
 | `POST /api/speech` | JSON `{text,voice?}` | `audio/wav` |
 | `POST /api/transcribe` | Multipart com campo `audio` | JSON `{text}` |
 
-Erros têm formato `{error:{code,message}}`. Mensagens aceitam até 2.000 caracteres, respostas de voz até 1.600, histórico até 12 mensagens/12.000 caracteres e gravações até 8 MB. Apenas os papéis `user` e `assistant` são aceitos no histórico. Chamadas externas têm limite de 45 segundos e são canceladas quando o cliente interrompe a solicitação. Erros de provedores são traduzidos sem devolver payloads internos ou credenciais.
+Erros têm formato `{error:{code,message}}`. Mensagens aceitam até 2.000 caracteres, respostas de voz até 1.600, histórico até 12 mensagens/12.000 caracteres e gravações até 8 MB. Apenas os papéis `user` e `assistant` são aceitos no histórico. O ciclo completo do agente, incluindo consulta e correções, tem limite de 45 segundos; as demais chamadas externas também têm limite de 45 segundos e são canceladas quando o cliente interrompe a solicitação. Erros de provedores são traduzidos sem devolver payloads internos ou credenciais.
 
 O limitador básico permite 30 solicitações por rota, por identificador, por minuto e mantém estado apenas no Worker atual. Por padrão, todas as solicitações compartilham o identificador local; `X-Forwarded-For` é ignorado. Defina `TRUST_PROXY_HEADERS=cloudflare` somente em implantação protegida por uma borda Cloudflare que sobrescreve `CF-Connecting-IP`. Nesse caso a cota usa esse IP. Uma implantação pública de maior escala deve aplicar autenticação e limite distribuído no provedor de hospedagem.
 
