@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent, type CSSProperties } from 'react';
 import { BookOpen, Check, Focus, Hand, Info, LoaderCircle, MessageCircle, Mic, RotateCcw, SendHorizontal, Settings2, Square, UserRound, Volume2, VolumeX, X } from 'lucide-react';
-import Image from 'next/image';
 import Link from 'next/link';
 import AvatarStage, { type AvatarHandle } from './AvatarStage';
 import { SpeechPlayer, type MouthFrame } from '../lib/audio';
@@ -371,7 +370,7 @@ export default function ConversationApp() {
         <div className="stage-backdrop" aria-hidden="true" />
         <div className="stage-view">
           <AvatarStage key={avatarVersion} ref={avatar} view={view} motionEnabled={motionEnabled} onReady={onAvatarReady} onError={onAvatarError} />
-          {!ready && <div className="avatar-loading"><Image src="/models/avatar-poster.webp" alt="" width={640} height={800} unoptimized /><div className="loading-label" role="status">{modelError ? <><span>Não foi possível abrir a visualização 3D.</span><button className="small-button" onClick={() => { setModelError(''); setAvatarVersion(value => value + 1); }}>Tentar novamente</button></> : <><LoaderCircle size={17} className="spin" /><span>Preparando o personagem…</span></>}</div></div>}
+          {!ready && <div className="avatar-loading"><div className="loading-label" role="status">{modelError ? <><span>Não foi possível abrir a visualização 3D.</span><button className="small-button" onClick={() => { setModelError(''); setAvatarVersion(value => value + 1); }}>Tentar novamente</button></> : <><LoaderCircle size={17} className="spin" /><span>Carregando o modelo 3D…</span></>}</div></div>}
         </div>
         <div className="scene-heading"><h1 id="page-title">Gonçalves Dias</h1><p>Poeta e escritor</p></div>
         <div className="scene-actions">
@@ -394,7 +393,7 @@ export default function ConversationApp() {
             <button type="button" className={`talk-button ${phase === 'recording' ? 'recording' : phase === 'speaking' ? 'speaking' : busy ? 'working' : ''}`} style={{ '--audio-level': level } as CSSProperties} disabled={!busy && (!status || !ready)} aria-describedby="voice-label" aria-label={phase === 'recording' ? 'Parar gravação e enviar' : busy ? 'Interromper' : demoMode ? 'Configurar voz para usar o microfone' : 'Gravar mensagem de voz'} onClick={phase === 'recording' ? finishRecording : busy ? stop : () => void startRecording()}>
               {phase === 'recording' ? <Square size={32} fill="currentColor" /> : phase === 'speaking' ? <span className="voice-bars" aria-hidden="true">{[.55,.8,1,.7,.45].map((height,index) => <i key={index} style={{ height: `${10 + level * 32 * height}px` }} />)}</span> : busy ? <LoaderCircle size={42} className="spin" /> : <Mic size={45} strokeWidth={2.3} />}
             </button>
-            <span id="voice-label" role="status">{modelError ? 'Visualização indisponível' : !ready ? 'Preparando o personagem…' : phase === 'idle' ? 'Clique para falar' : phase === 'recording' ? `Ouvindo você · ${recordSeconds}s / 25s` : phases[phase]}</span>
+            <span id="voice-label" role="status">{modelError ? 'Visualização indisponível' : !ready ? 'Carregando o modelo 3D…' : phase === 'idle' ? 'Clique para falar' : phase === 'recording' ? `Ouvindo você · ${recordSeconds}s / 25s` : phases[phase]}</span>
           </div>
           <form onSubmit={submit} className={`composer ${phase === 'recording' ? 'recording' : ''}`}>
             <label htmlFor="message-input" className="sr-only">Sua mensagem para Gonçalves Dias</label>
