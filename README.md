@@ -104,7 +104,7 @@ Este projeto usa Vinext, React, Three.js e Cloudflare Workers. A configuração 
 
 ### Publicação no Easypanel (contêiner)
 
-O build padrão gera um Worker do Cloudflare, que não roda em contêiner. Com `DEPLOY_TARGET=node`, o mesmo código vira um servidor Node autônomo em `dist/standalone/server.js`: o plugin do Cloudflare sai do build, `cloudflare:workers` passa a ler `process.env` (`build/node-workers-env.ts`) e o `next.config.ts` pede a saída `standalone`. O `Dockerfile` faz exatamente isso, e o `.dockerignore` impede que `.env.local` entre na imagem.
+O build padrão gera um Worker do Cloudflare, que não roda em contêiner. Com `DEPLOY_TARGET=node`, o mesmo código vira um servidor Node autônomo em `dist/standalone/server.js`: o plugin do Cloudflare sai do build, `cloudflare:workers` passa a ler `process.env` (`build/node-workers-env.ts`) e o `next.config.ts` pede a saída `standalone`. O `Dockerfile` faz exatamente isso, e o `.dockerignore` impede que `.env.local` entre na imagem. Como o proxy do Easypanel termina o HTTPS e repassa em HTTP, a imagem define `VINEXT_TRUST_PROXY=1`: o vinext monta a URL do pedido com `X-Forwarded-Proto`, e a verificação de origem da API compara `https://` com `https://`. Sem isso, todo POST do navegador — chat, voz e transcrição — recebe `403` ("Esta solicitação precisa partir do próprio aplicativo").
 
 No serviço do Easypanel:
 

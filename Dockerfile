@@ -15,9 +15,13 @@ RUN npm run build
 
 FROM node:24-bookworm-slim
 WORKDIR /app
+# O proxy do Easypanel termina o HTTPS e repassa em HTTP. VINEXT_TRUST_PROXY
+# faz o vinext montar a URL do pedido com o X-Forwarded-Proto (https); sem ele,
+# a origem do app vira http:// e a API recusa os pedidos do navegador (403).
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
-    PORT=3000
+    PORT=3000 \
+    VINEXT_TRUST_PROXY=1
 COPY --from=build --chown=node:node /app/dist/standalone ./
 USER node
 EXPOSE 3000
