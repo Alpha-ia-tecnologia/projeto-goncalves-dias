@@ -39,7 +39,11 @@ next-env.d.ts
 /dist/
 /.wrangler/
 /outputs/
-/work/
+# Scratch audits, recordings and reports stay local. The captured-motion
+# pipeline is kept: the clips in public/models/clips are built by it.
+/work/*
+!/work/build-mocap-clips.mjs
+!/work/mocap-*.mjs
 
 !.env.example
 .dev.vars*
