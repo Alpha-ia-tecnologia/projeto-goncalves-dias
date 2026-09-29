@@ -180,6 +180,17 @@ describe("request protection and cancellation", () => {
     expect(clientIdentifier(post({}, { "x-forwarded-for": "203.0.113.11" }), { ...configured, trustCloudflareIp: true })).toBe("shared-local");
   });
 
+  it("behind an opted-in reverse proxy, keys the quota on the hop the proxy appended", () => {
+    const proxied = readConfig({ TRUST_PROXY_HEADERS: "proxy" });
+    expect(proxied).toMatchObject({ trustForwardedFor: true, trustCloudflareIp: false });
+    // A visitor can send any X-Forwarded-For; only the last hop is the proxy's own.
+    expect(clientIdentifier(post({}, { "x-forwarded-for": "198.51.100.7, 203.0.113.11" }), proxied)).toBe("203.0.113.11");
+    expect(clientIdentifier(post({}, { "x-forwarded-for": "2001:db8::1" }), proxied)).toBe("2001:db8::1");
+    expect(clientIdentifier(post({}, { "cf-connecting-ip": "203.0.113.10" }), proxied)).toBe("shared-local");
+    expect(clientIdentifier(post({}, { "x-forwarded-for": "198.51.100.7, not-an-address" }), proxied)).toBe("shared-local");
+    expect(clientIdentifier(post({}, { "x-forwarded-for": "198.51.100.7," }), proxied)).toBe("shared-local");
+  });
+
   it("enforces and resets limits, with Retry-After on API responses", async () => {
     let now = 0;
     const api = createApiHandlers({ config: () => configured, fetch: async () => Response.json(agentCompletion()), limiter: new RateLimiter(1, 60_000, () => now) });

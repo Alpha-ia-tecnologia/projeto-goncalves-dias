@@ -1,0 +1,19 @@
+# Segredos locais nunca entram na imagem.
+.env*
+!.env.example
+.dev.vars*
+
+# Dependências e builds são refeitos dentro do contêiner.
+node_modules
+dist
+.next
+.vinext
+.wrangler
+*.tsbuildinfo
+
+# Nada disto é necessário para o build.
+.git
+.claude-flow
+coverage
+tests
+work

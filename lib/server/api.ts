@@ -9,6 +9,7 @@ export interface ServerConfig {
   ttsModel: string;
   voice: string;
   trustCloudflareIp: boolean;
+  trustForwardedFor: boolean;
 }
 
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -44,6 +45,7 @@ export function readConfig(env: EnvValues): ServerConfig {
     ttsModel: value("OPENAI_TTS_MODEL") || "gpt-4o-mini-tts",
     voice: value("OPENAI_TTS_VOICE") || "cedar",
     trustCloudflareIp: value("TRUST_PROXY_HEADERS") === "cloudflare",
+    trustForwardedFor: value("TRUST_PROXY_HEADERS") === "proxy",
   };
 }
 
@@ -145,10 +147,19 @@ export class RateLimiter {
 }
 
 export function clientIdentifier(request: Request, config: ServerConfig): string {
-  // X-Forwarded-For is intentionally ignored. Enable CF header only behind a
-  // trusted Cloudflare edge that overwrites it. Local/untrusted traffic shares a quota.
-  const candidate = config.trustCloudflareIp ? request.headers.get("cf-connecting-ip") : null;
+  // Forwarded headers are ignored unless opted in. Enable the CF header only behind a
+  // trusted Cloudflare edge that overwrites it, and X-Forwarded-For only behind a single
+  // reverse proxy (Easypanel's Traefik) that appends the peer address as the last hop;
+  // earlier hops are whatever the visitor sent. Local/untrusted traffic shares a quota.
+  const candidate = config.trustCloudflareIp ? request.headers.get("cf-connecting-ip")
+    : config.trustForwardedFor ? lastForwardedHop(request.headers.get("x-forwarded-for"))
+    : null;
   return candidate && /^[0-9a-f:.]{3,45}$/i.test(candidate) ? candidate : "shared-local";
+}
+
+function lastForwardedHop(header: string | null): string | null {
+  const hops = header?.split(",") ?? [];
+  return hops.length ? hops[hops.length - 1].trim() : null;
 }
 
 function json(value: unknown, status = 200, extraHeaders?: HeadersInit): Response {

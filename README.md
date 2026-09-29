@@ -85,7 +85,7 @@ Referências técnicas: [agentes LangChain](https://docs.langchain.com/oss/javas
 
 Erros têm formato `{error:{code,message}}`. Mensagens aceitam até 2.000 caracteres, respostas de voz até 1.600, histórico até 12 mensagens/12.000 caracteres e gravações até 8 MB. Apenas os papéis `user` e `assistant` são aceitos no histórico. O ciclo completo do agente, incluindo consulta e correções, tem limite de 45 segundos; as demais chamadas externas também têm limite de 45 segundos e são canceladas quando o cliente interrompe a solicitação. Erros de provedores são traduzidos sem devolver payloads internos ou credenciais.
 
-O limitador básico permite 30 solicitações por rota, por identificador, por minuto e mantém estado apenas no Worker atual. Por padrão, todas as solicitações compartilham o identificador local; `X-Forwarded-For` é ignorado. Defina `TRUST_PROXY_HEADERS=cloudflare` somente em implantação protegida por uma borda Cloudflare que sobrescreve `CF-Connecting-IP`. Nesse caso a cota usa esse IP. Uma implantação pública de maior escala deve aplicar autenticação e limite distribuído no provedor de hospedagem.
+O limitador básico permite 30 solicitações por rota, por identificador, por minuto e mantém estado apenas no processo atual. Por padrão, todas as solicitações compartilham o identificador local; `X-Forwarded-For` é ignorado. Defina `TRUST_PROXY_HEADERS=cloudflare` somente em implantação protegida por uma borda Cloudflare que sobrescreve `CF-Connecting-IP`; nesse caso a cota usa esse IP. Defina `TRUST_PROXY_HEADERS=proxy` somente atrás de um único proxy reverso que acrescenta o endereço do visitante ao fim de `X-Forwarded-For`, como o Traefik do Easypanel; a cota usa esse último endereço, e os anteriores, que o visitante pode forjar, são ignorados. Uma implantação pública de maior escala deve aplicar autenticação e limite distribuído no provedor de hospedagem.
 
 Conversas e gravações não são persistidas pela aplicação. Durante a conversa, texto/histórico são enviados ao DeepSeek e gravações/texto falado à OpenAI. O tratamento nesses serviços segue as configurações e políticas das contas usadas.
 
@@ -101,6 +101,18 @@ npm run build
 Os testes usam provedores simulados e verificam contratos, limites, cancelamento, falhas, privacidade das chaves e gestos, além de áudio progressivo antes do fim da transmissão, fragmentação PCM, reprodução contínua, fechamento da boca nas pausas, detecção do fim de fala e movimentos de olhos e pálpebras consistentes entre diferentes taxas de quadros. Uma conversa real exige chaves válidas e crédito nas duas contas.
 
 Este projeto usa Vinext, React, Three.js e Cloudflare Workers. A configuração de Sites está em `.openai/hosting.json`. Neste projeto, as chaves ficam somente em `.env.local`, para execuções locais, conforme a preferência definida. A versão hospedada permanece sem credenciais e funciona em modo de demonstração. Não envie `.env.local` para o Git ou a hospedagem. Preserve os arquivos `.blend` originais na pasta acima do projeto; o navegador usa a versão GLB exportada em `public/models/`.
+
+### Publicação no Easypanel (contêiner)
+
+O build padrão gera um Worker do Cloudflare, que não roda em contêiner. Com `DEPLOY_TARGET=node`, o mesmo código vira um servidor Node autônomo em `dist/standalone/server.js`: o plugin do Cloudflare sai do build, `cloudflare:workers` passa a ler `process.env` (`build/node-workers-env.ts`) e o `next.config.ts` pede a saída `standalone`. O `Dockerfile` faz exatamente isso, e o `.dockerignore` impede que `.env.local` entre na imagem.
+
+No serviço do Easypanel:
+
+1. **Fonte → Build:** escolha **Dockerfile** (arquivo `Dockerfile`). Com Nixpacks, o projeto é tomado por um site Vite estático e servido pelo Caddy a partir de `dist/`, onde não há `index.html` — todo endereço responde `404`.
+2. **Domínios:** porta de destino **3000**.
+3. **Ambiente:** `DEEPSEEK_API_KEY`, `OPENAI_API_KEY` e `TRUST_PROXY_HEADERS=proxy`. Sem `proxy`, todos os visitantes dividem uma única cota de 30 pedidos por minuto. As demais variáveis do `.env.example` são opcionais.
+
+Para conferir o servidor Node sem Docker: `DEPLOY_TARGET=node npm run build` e `node dist/standalone/server.js` (Git Bash; porta `PORT`, padrão 3000). No Windows, o vinext 0.0.50 indexa os arquivos estáticos com `\` e só serve os da raiz de `public/`; no Linux do contêiner todos são servidos.
 
 Referências: [DeepSeek Chat Completion](https://api-docs.deepseek.com/api/create-chat-completion/), [OpenAI — geração de voz](https://developers.openai.com/api/docs/guides/text-to-speech), [OpenAI — transcrição](https://developers.openai.com/api/docs/guides/speech-to-text), [Cloudflare — variáveis locais](https://developers.cloudflare.com/workers/local-development/environment-variables/).
 
