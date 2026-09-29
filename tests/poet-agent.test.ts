@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
-import { PoetReplySchema, recoverStructuredReply, runPoetAgent } from "../lib/server/poet-agent";
+import { MAX_AGENT_MODEL_CALLS, MAX_RESEARCH_CALLS, PoetReplySchema, recoverStructuredReply, runPoetAgent } from "../lib/server/poet-agent";
 import { lookupPoetKnowledge, POET_KNOWLEDGE_TOPICS } from "../lib/server/poet-persona";
 
 type ProviderMessage = {
@@ -104,7 +104,7 @@ describe("Gonçalves Dias agent with the real LangChain loop", () => {
     const { fetcher } = provider(() => finalReply("Gonçalves Dias foi um poeta. Ele escreveu versos."));
     await expect(run(fetcher, "Quem é você?")).rejects.toMatchObject({ name: "PoetAgentError", code: "AGENT_LIMIT" });
     expect(fetcher.mock.calls.length).toBeGreaterThan(1);
-    expect(fetcher.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(fetcher.mock.calls.length).toBeLessThanOrEqual(MAX_AGENT_MODEL_CALLS);
   });
 
   it("lets the model repair a malformed structured gesture rather than exposing it", async () => {
@@ -132,7 +132,7 @@ describe("Gonçalves Dias agent with the real LangChain loop", () => {
     const { fetcher } = provider((_request, turn) => toolReply("unavailable_tool", {}, `call_unknown_${turn}`));
     await expect(run(fetcher, "Conte-me algo.")).rejects.toMatchObject({ name: "PoetAgentError" });
     expect(fetcher.mock.calls.length).toBeGreaterThan(0);
-    expect(fetcher.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(fetcher.mock.calls.length).toBeLessThanOrEqual(MAX_AGENT_MODEL_CALLS);
   });
 
   it("offers the school topic and feeds its facts into the next model turn", async () => {
@@ -160,6 +160,80 @@ describe("Gonçalves Dias agent with the real LangChain loop", () => {
     // Insider voice, never the language of a lookup.
     expect(instructions).toMatch(/nossa escola/);
     expect(instructions).toMatch(/segundo os registros/);
+  });
+});
+
+describe("pesquisa para responder com precisão", () => {
+  const found = JSON.stringify({ available: true, source: "Wikipédia", title: "Gonçalves Dias", passages: "Várias de suas peças românticas, inclusive \"Ainda uma vez — Adeus\" foram escritas para Ana Amélia Ferreira Vale." });
+
+  it("oferece pesquisar, executa a consulta pedida pelo modelo e entrega o resultado ao turno seguinte", async () => {
+    const answer = "Esse poema é meu: escrevi Ainda uma vez — Adeus pensando em Ana Amélia.";
+    const research = vi.fn(async () => found);
+    const { fetcher, requests } = provider((_request, turn) => turn === 1
+      ? toolReply("pesquisar", { source: "enciclopedia", query: "Ainda uma vez adeus Gonçalves Dias" }, "call_research")
+      : finalReply(answer));
+    const result = await runPoetAgent({ apiKey: "deepseek-test-only", model: "deepseek-flash", message: "A quem pertence Ainda uma vez, adeus?", history: [], signal: new AbortController().signal, fetch: fetcher, research });
+
+    expect(result.text).toBe(answer);
+    expect(research).toHaveBeenCalledWith("enciclopedia", "Ainda uma vez adeus Gonçalves Dias");
+    expect(requests[0].tools?.map(tool => tool.function.name)).toEqual(expect.arrayContaining(["consultar_acervo", "pesquisar", "resposta_do_poeta"]));
+    const toolMessage = requests[1].messages.find(message => message.role === "tool" && message.tool_call_id === "call_research");
+    expect(toolMessage?.content).toContain("Ana Amélia Ferreira Vale");
+  });
+
+  it("limita as pesquisas de uma resposta, mesmo pedidas todas de uma vez", async () => {
+    const research = vi.fn(async () => found);
+    const calls = Array.from({ length: 5 }, (_, index) => ({ id: `call_many_${index}`, type: "function", function: { name: "pesquisar", arguments: JSON.stringify({ source: "enciclopedia", query: `assunto ${index}` }) } }));
+    const { fetcher, requests } = provider((_request, turn) => turn === 1
+      ? { ...toolReply("pesquisar", {}), choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: calls }, finish_reason: "tool_calls" }] }
+      : finalReply(greeting));
+    await runPoetAgent({ apiKey: "deepseek-test-only", model: "deepseek-flash", message: "Oi", history: [], signal: new AbortController().signal, fetch: fetcher, research });
+    expect(research).toHaveBeenCalledTimes(MAX_RESEARCH_CALLS);
+    const refused = requests[1].messages.filter(message => message.role === "tool" && /limite de pesquisas/.test(message.content ?? ""));
+    expect(refused).toHaveLength(5 - MAX_RESEARCH_CALLS);
+  });
+
+  it("não oferece pesquisar quando o servidor não fornece a pesquisa", async () => {
+    const { fetcher, requests } = provider(() => finalReply(greeting, "wave"));
+    await run(fetcher);
+    expect(requests[0].tools?.map(tool => tool.function.name)).not.toContain("pesquisar");
+  });
+
+  it("recusa uma consulta vazia antes de ela sair do servidor", async () => {
+    const research = vi.fn(async () => found);
+    const { fetcher } = provider((_request, turn) => turn === 1
+      ? toolReply("pesquisar", { source: "enciclopedia", query: "" }, "call_empty")
+      : finalReply(greeting));
+    await runPoetAgent({ apiKey: "deepseek-test-only", model: "deepseek-flash", message: "Oi", history: [], signal: new AbortController().signal, fetch: fetcher, research });
+    expect(research).not.toHaveBeenCalled();
+  });
+
+  it("instrui o poeta a pesquisar o que o acervo não cobre, e nunca a escola", async () => {
+    const { fetcher, requests } = provider(() => finalReply(greeting));
+    await runPoetAgent({ apiKey: "deepseek-test-only", model: "deepseek-flash", message: "Oi", history: [], signal: new AbortController().signal, fetch: fetcher, research: vi.fn(async () => found) });
+    const instructions = JSON.stringify(requests[0].messages.find(message => message.role === "system")?.content ?? "");
+    expect(instructions).toContain("pesquisar");
+    expect(instructions).toMatch(/Nunca use pesquisar para a escola/);
+    expect(instructions).toMatch(/Ajuste o tamanho/);
+  });
+});
+
+describe("respostas a perguntas de todo tipo", () => {
+  it.each([
+    "Para mim, o poeta é quem escuta o mundo e devolve em versos o que ouviu.",
+    "Nossa escola fica em São Luís, e nossos alunos aprendem brincando.",
+    "Sete vezes oito dá cinquenta e seis; confesso que prefiro contar sílabas a contar números.",
+    "Deixe-me pensar: a capital do Maranhão é São Luís.",
+  ])("aceita uma fala legítima em primeira pessoa: %s", text => {
+    expect(PoetReplySchema.safeParse({ text, gesture: "none" }).success).toBe(true);
+  });
+
+  it.each([
+    "Gonçalves Dias nasceu em Caxias, e eu gosto de lembrar disso.",
+    "O poeta nasceu em Caxias e publicou Primeiros cantos.",
+    "A capital do Maranhão é São Luís.",
+  ])("continua recusando narração em terceira pessoa ou fala sem primeira pessoa: %s", text => {
+    expect(PoetReplySchema.safeParse({ text, gesture: "none" }).success).toBe(false);
   });
 });
 

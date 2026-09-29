@@ -1,4 +1,5 @@
-import { PoetAgentError, runPoetAgent } from "./poet-agent";
+import { PoetAgentError, runPoetAgent, type PoetResearch } from "./poet-agent";
+import { researchPublicSources } from "./poet-research";
 import { MAX_SPEECH_BYTES, POET_VOICE_INSTRUCTIONS, SPEECH_SAMPLE_RATE } from "./voice";
 import { VOICES, type ChatMessage, type ChatResponse, type Gesture, type ServiceStatus } from "../contracts";
 
@@ -433,9 +434,13 @@ export function createApiHandlers(options: {
         onAbort = () => reject(new DOMException("A solicitação foi interrompida.", "AbortError"));
         controller.signal.addEventListener("abort", onAbort, { once: true });
       });
+      // Research shares the conversation's deadline and cancellation, but not the
+      // DeepSeek transport: a failed lookup comes back to the poet as unavailable.
+      const research: PoetResearch = (source, query) =>
+        researchPublicSources(source, query, { fetch: fetcher, signal: controller.signal });
       const result = await Promise.race([
         runPoetAgent({ apiKey: key, model: config.deepseekModel, message, history,
-          signal: controller.signal, fetch: agentFetch }),
+          signal: controller.signal, fetch: agentFetch, research }),
         cancelled,
       ]);
       return json(parseAgentResponse(result, message));
@@ -444,6 +449,7 @@ export function createApiHandlers(options: {
       if (request.signal.aborted) throw new ApiError(499, "REQUEST_CANCELLED", "A solicitação foi interrompida.");
       if (transportError) throw transportError;
       if (error instanceof PoetAgentError && error.code === "AGENT_LIMIT") {
+        console.error("[chat] o poeta esgotou as etapas permitidas sem concluir a resposta.");
         throw new ApiError(502, "AGENT_LIMIT", "Não consegui concluir minha resposta. Pode reformular sua pergunta?");
       }
       // The visitor is told something gentle; whoever runs the server is told

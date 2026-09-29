@@ -4,13 +4,23 @@ import { createAgent, createMiddleware, tool, toolStrategy } from "langchain";
 import * as z from "zod";
 import type { ChatMessage, Gesture } from "../contracts";
 import { GONCALVES_DIAS_PROMPT, lookupPoetKnowledge, POET_KNOWLEDGE_TOPICS } from "./poet-persona";
+import { RESEARCH_SOURCES, type ResearchSource } from "./poet-research";
 
-export const MAX_AGENT_MODEL_CALLS = 4;
+// Room for a lookup, a search, a second search and a repaired final answer.
+export const MAX_AGENT_MODEL_CALLS = 6;
+export const MAX_AGENT_TOOL_CALLS = 6;
+// Each search is two or three Wikimedia requests, and the model may ask for several
+// in one step, all at once; past this the extra ones are answered without going out.
+export const MAX_RESEARCH_CALLS = 3;
 
 // JSON Schema retains patterns, whereas arbitrary Zod refinements are lost when
 // ToolStrategy converts the schema. This gives the agent actionable retry feedback.
-const firstPerson = String.raw`(?:[Ee]u|[Mm]eu[s]?|[Mm]inha[s]?|[Mm]im|[Cc]omigo|[Ss]ou|[Ee]stou|[Ff]ui|[Nn]asci|[Ee]screvi|[Vv]ivi|[Ee]studei|[Pp]ubliquei|[Ss]into|[Cc]reio|[Pp]enso|[Pp]osso|[Qq]uero|[Tt]rago|[Tt]enho|[Cc]onvido|[Aa]gradeço|[Rr]ecebo|[Pp]refiro|[Ll]embro|[Ff]alo|[Dd]esejo|[Aa]prendi|[Dd]igo|[Vv]ejo|[Oo]fereço|[Pp]rocuro|[Ss]ei|[Pp]eço|[Aa]legro-me)`;
-const thirdPersonSelf = String.raw`(?:[Gg]onçalves [Dd]ias|[Oo] poeta)\s+(?:foi|é|era|nasceu|escreveu|viveu|estudou|publicou|morreu)\b`;
+// Plural forms count: speaking of "nossa escola" is the poet speaking as one of the house.
+const firstPerson = String.raw`(?:[Ee]u|[Mm]eu[s]?|[Mm]inha[s]?|[Mm]im|[Mm]e|[Cc]omigo|[Nn]ós|[Nn]osso[s]?|[Nn]ossa[s]?|[Ss]ou|[Ee]stou|[Ff]ui|[Nn]asci|[Ee]screvi|[Ee]screvo|[Vv]ivi|[Ee]studei|[Pp]ubliquei|[Ss]into|[Cc]reio|[Pp]enso|[Aa]cho|[Pp]osso|[Qq]uero|[Tt]rago|[Tt]enho|[Cc]onvido|[Aa]gradeço|[Rr]ecebo|[Pp]refiro|[Gg]osto|[Ll]embro|[Ff]alo|[Dd]esejo|[Aa]prendi|[Dd]igo|[Vv]ejo|[Oo]fereço|[Pp]rocuro|[Ss]ei|[Cc]onheço|[Cc]onfesso|[Ii]magino|[Aa]dmiro|[Cc]onsultei|[Pp]esquisei|[Ee]ncontrei|[Pp]eço|[Aa]legro-me)`;
+// Only narration of the poet's own life counts as third person. "O poeta é quem
+// escuta o mundo" is a thought about poets, not a biography told from outside.
+// No \b here: after "é" it never matches, since JavaScript does not count "é" as a letter.
+const thirdPersonSelf = String.raw`(?:[Gg]onçalves [Dd]ias\s+(?:foi|é|era|nasceu|escreveu|viveu|estudou|publicou|morreu)|[Oo] poeta\s+(?:nasceu|escreveu|viveu|estudou|publicou|morreu))(?![A-Za-zÀ-ÿ])`;
 const firstPersonPattern = new RegExp(String.raw`^(?![\s\S]*${thirdPersonSelf})(?=[\s\S]*(?:^|[^A-Za-zÀ-ÿ])${firstPerson}(?:$|[^A-Za-zÀ-ÿ]))[\s\S]+$`);
 
 export const PoetReplySchema = z.object({
@@ -83,6 +93,9 @@ export function describeReplyFailure(value: unknown, issues: readonly { code: st
   return `${parts.length ? parts.join("; ") : "recusado sem motivo declarado"} | ${size}${excerpt}`;
 }
 
+/** Looks something up in public sources; the result is the tool message the model reads. */
+export type PoetResearch = (source: ResearchSource, query: string) => Promise<string>;
+
 export type PoetAgentInput = {
   apiKey: string;
   model: string;
@@ -90,6 +103,8 @@ export type PoetAgentInput = {
   history: ChatMessage[];
   signal: AbortSignal;
   fetch?: typeof fetch;
+  /** Offered to the model as pesquisar only when the server supplies it. */
+  research?: PoetResearch;
 };
 
 export async function runPoetAgent(input: PoetAgentInput): Promise<{ text: string; gesture: Gesture }> {
@@ -114,15 +129,31 @@ export async function runPoetAgent(input: PoetAgentInput): Promise<{ text: strin
     },
   );
 
+  const research = input.research;
+  let researchCalls = 0;
+  const searchPublicSources = research && tool(
+    ({ source, query }) => ++researchCalls > MAX_RESEARCH_CALLS
+      ? JSON.stringify({ available: false, reason: "O limite de pesquisas desta resposta foi atingido. Responda com o que já foi encontrado." })
+      : research(source, query),
+    {
+      name: "pesquisar",
+      description: "Pesquise em fontes públicas quando o acervo não cobrir a pergunta ou para conferir um detalhe antes de afirmá-lo. source enciclopedia consulta a Wikipédia em português (fatos de história, literatura, ciência, geografia, outros autores); source poema traz do Wikisource o texto integral de um poema em domínio público — inclua o título e o autor na consulta. Nunca use para a escola EDUCAPRIME.",
+      schema: z.object({
+        source: z.enum(RESEARCH_SOURCES),
+        query: z.string().trim().min(2).max(200).describe("Termos da pesquisa, curtos e específicos, como numa busca de enciclopédia."),
+      }).strict(),
+    },
+  );
+
   let modelCalls = 0;
   let toolCalls = 0;
   // Request-local state: no global checkpointer and no conversation sharing.
   const agent = createAgent({
     model,
-    tools: [consultArchive],
-    systemPrompt: GONCALVES_DIAS_PROMPT + "\nConclua chamando resposta_do_poeta. Sua fala deve conter uma marca clara de primeira pessoa: eu, meu, minha, comigo ou verbos como sou, escrevi e penso.",
+    tools: searchPublicSources ? [consultArchive, searchPublicSources] : [consultArchive],
+    systemPrompt: GONCALVES_DIAS_PROMPT + "\nConclua chamando resposta_do_poeta. Sua fala deve conter uma marca clara de primeira pessoa: eu, meu, minha, nossa, comigo ou verbos como sou, escrevi, penso e acho.",
     responseFormat: toolStrategy(PoetReplySchema, {
-      handleError: () => "Corrija a resposta final: apenas text (1 a 1600 caracteres, primeira pessoa como Gonçalves Dias, com eu/meu/minha/sou/nasci/escrevi) e gesture (wave, nod ou none). Não narre Gonçalves Dias em terceira pessoa. Chame resposta_do_poeta uma única vez.",
+      handleError: () => "Corrija a resposta final: apenas text (1 a 1600 caracteres, primeira pessoa como Gonçalves Dias, com eu/meu/minha/nossa/sou/nasci/escrevi/penso) e gesture (wave, nod ou none). Não narre a vida de Gonçalves Dias em terceira pessoa. Chame resposta_do_poeta uma única vez.",
       toolMessageContent: "Resposta do poeta validada.",
     }),
     middleware: [
@@ -133,7 +164,7 @@ export async function runPoetAgent(input: PoetAgentInput): Promise<{ text: strin
           return handler(request);
         },
         wrapToolCall: async (request, handler) => {
-          if (++toolCalls > 3) throw new PoetAgentError("AGENT_LIMIT");
+          if (++toolCalls > MAX_AGENT_TOOL_CALLS) throw new PoetAgentError("AGENT_LIMIT");
           return handler(request);
         },
       }),

@@ -60,9 +60,9 @@ O acervo guarda duas novidades da escola: o **Letria**, plataforma de alfabetiza
 
 Os limites permanecem: o poeta não inventa mensalidades, vagas, número de alunos, professores, prêmios ou promessas de matrícula, não assume compromissos em nome da escola e encaminha matrícula, valores e vaga aos canais da escola. O que o acervo não cobre é respondido de dentro da casa — “isso é melhor confirmar com a nossa secretaria” — e não como lacuna de pesquisa.
 
-A ferramenta `consultar_acervo` consulta seis temas locais: vida, obras, Canção do exílio, estilo, contexto e escola. O acervo cita a Academia Brasileira de Letras, a Biblioteca Nacional e a Brasiliana USP. O tema escola é fornecido pela própria Escola Educa Prime e, por isso, é afirmado na conversa sem citação de fonte. Ele é pequeno e curado, sem pesquisa aberta na internet: detalhes não cobertos devem receber uma admissão de incerteza. Apenas a primeira estrofe verificada de Canção do exílio está disponível para recitação.
+A ferramenta `consultar_acervo` consulta seis temas locais: vida, obras, Canção do exílio, estilo, contexto e escola. O acervo cita a Academia Brasileira de Letras, a Biblioteca Nacional e a Brasiliana USP. O tema escola é fornecido pela própria Escola Educa Prime e, por isso, é afirmado na conversa sem citação de fonte. Ele é pequeno e curado; o que ele não cobre, o poeta pesquisa (veja abaixo).
 
-A saída estruturada `resposta_do_poeta` contém `text` e `gesture`. Antes de liberar uma fala, o servidor valida tamanho, gesto e marcas linguísticas de primeira pessoa. Respostas que falham voltam ao agente para correção. A execução permite até quatro chamadas ao modelo e três consultas a ferramentas, com prazo único de 45 segundos e cancelamento pelo usuário. Esses limites incluem tentativas de correção; não há repetição ilimitada nem resposta simulada no lugar de uma falha real.
+A saída estruturada `resposta_do_poeta` contém `text` e `gesture`. Antes de liberar uma fala, o servidor valida tamanho, gesto e marcas linguísticas de primeira pessoa. Respostas que falham voltam ao agente para correção. A execução permite até seis chamadas ao modelo e seis consultas a ferramentas, com prazo único de 45 segundos e cancelamento pelo usuário. Esses limites incluem tentativas de correção; não há repetição ilimitada nem resposta simulada no lugar de uma falha real.
 
 O histórico da sessão é enviado em cada pedido. O agente é criado por solicitação e não compartilha memória persistente entre visitantes. A implementação não exige conta LangSmith nem ativa rastreamento externo.
 
@@ -71,6 +71,31 @@ Código: `lib/server/poet-agent.ts`, `poet-persona.ts` e `poet-knowledge.ts`. As
 O agente roda **sem `maxConcurrency`**, e isso é deliberado. Com o valor 1 que havia antes, uma pergunta que levasse o modelo a pedir dois tópicos do acervo no mesmo turno — "cante uma música" pedia `cancao-do-exilio` e `obras` juntos — abria o grafo em duas tarefas, das quais só uma cabia, e a execução terminava ali: ferramentas nunca executadas, nenhuma resposta composta, nenhum erro levantado. O visitante recebia um `502` e o servidor não registrava nada. A pergunta falhava em cerca de metade das tentativas. O limite também não comprava nada, porque o único nó que se ramifica é `consultar_acervo`, e ele é uma consulta a uma tabela em memória, não uma chamada que precise de contenção.
 
 Duas defesas acompanham o conserto. `PoetAgentError` carrega um `detail` que nomeia a regra quebrada, o tamanho da fala recusada e os seus primeiros 120 caracteres, e a rota o registra no servidor — a pergunta do visitante nunca entra no log. E se o agente algum dia responder em prosa sem chamar `resposta_do_poeta`, `recoverStructuredReply` reconstrói o envelope a partir da última fala em vez de descartar uma resposta boa; só o envelope, porque o texto continua a passar pelas mesmas regras de primeira pessoa e tamanho, e continua recusado se não passar.
+
+### Pesquisa e perguntas de todo tipo
+
+O acervo curado respondia bem sobre a vida e a escola, mas tudo o que ficava fora dele virava "não tenho registro" — ou pior, uma resposta de memória. Perguntado "a quem pertence *Ainda uma vez — adeus*?", o poeta ora dizia que o poema estava em *Últimos cantos* (1851), ora não sabia, e numa das vezes o confundiu com a Canção do exílio e recitou a estrofe dela.
+
+Agora ele tem a ferramenta `pesquisar` (`lib/server/poet-research.ts`), com duas fontes públicas e sem chave:
+
+| `source` | Fonte | Devolve |
+| --- | --- | --- |
+| `enciclopedia` | Wikipédia em português | a abertura do artigo e os parágrafos que compartilham palavras com a pergunta, até 2.400 caracteres, com título, URL e resultados relacionados |
+| `poema` | Wikisource em português | o texto do poema (só os blocos de verso, sem cabeçalhos nem numeração de estrofes), o autor, a nota de publicação e a URL; poemas longos são cortados entre estrofes, até 2.600 caracteres, com `complete: false` |
+
+O modelo controla só os termos da busca, normalizados para NFC e limitados a 200 caracteres. Os hosts são fixos: `pt.wikipedia.org` e `pt.wikisource.org`, com `User-Agent` identificado, como a Wikimedia pede. Cada consulta tem 8 segundos, dentro do prazo de 45 segundos da conversa. Qualquer falha — erro HTTP, resposta que não é JSON, rede fora, lentidão — volta ao poeta como `available: false`, e ele diz que não conseguiu confirmar, em vez de o visitante receber um `502`. Só o cancelamento pela pessoa interrompe a conversa inteira.
+
+Uma revisão de segurança conferiu que os hosts não escapam: a consulta e os títulos que voltam da busca entram só como parâmetros codificados. Ela apontou quatro cuidados, já aplicados:
+- **No máximo três pesquisas por resposta.** O modelo pode pedir várias no mesmo passo, e cada uma custa dois ou três pedidos à Wikimedia; as que passam do limite voltam como "limite atingido" sem sair do servidor.
+- **Aviso de conteúdo de terceiros.** Todo resultado leva `notice`, dizendo que o conteúdo é público, de terceiros, e serve como informação, nunca como instrução — páginas abertas podem ser vandalizadas.
+- **Limites de tamanho.** Respostas que anunciam mais de 2 MB são recusadas sem leitura, e HTML acima de 500 mil caracteres é ignorado antes das expressões regulares.
+- **Entidades inválidas.** Uma entidade HTML fora do Unicode, como `&#99999999;`, fica como está, em vez de derrubar a leitura do poema inteiro.
+
+As instruções mandam pesquisar antes de afirmar o que o acervo não cobre, preferir o acervo quando os dois divergirem sobre a vida do poeta, recitar apenas versos vindos do acervo ou da pesquisa (atualizando só a ortografia, "teos" para "teus", sem trocar palavras) e **nunca pesquisar a escola**, que continua sendo afirmada de dentro da casa. O tamanho da resposta acompanha a pergunta: uma ou duas frases para o que é curto, até cerca de 220 palavras para perguntas longas ou com várias partes, e o limite de 1.600 caracteres para explicações e recitações. O poeta responde a perguntas de qualquer disciplina, em primeira pessoa, fala de fatos posteriores a 1864 como quem os consultou e recusa com gentileza temas impróprios para crianças.
+
+A validação da primeira pessoa também mudou. Ela recusava respostas legítimas a perguntas variadas — "Nossa escola fica…" não tinha marca no singular. Agora aceita o plural (`nós`, `nosso`, `nossa`) e verbos comuns (`acho`, `gosto`, `conheço`, `consultei`). A regra de terceira pessoa ficou explícita: recusa "Gonçalves Dias nasceu/foi/é…" e "O poeta nasceu/escreveu/publicou…", mas aceita "o poeta é quem escuta o mundo", que é uma ideia sobre poetas e não uma biografia. A versão anterior usava `\b` depois de "é", que no JavaScript nunca casa, porque "é" não conta como letra.
+
+Na verificação com DeepSeek e Wikimedia reais, 14 perguntas voltaram `200` em 1,6 a 6,8 segundos: o poema de Ana Amélia, a recitação vinda do Wikisource, Castro Alves, as três gerações românticas, a Copa de 2002, a Canção do exílio inteira, um astronauta que não existe (o poeta corrigiu a premissa), um pedido impróprio (recusado) e a escola (sem pesquisa). A pesquisa corrige fatos, não o raciocínio do modelo: ao explicar rima rica, ele trouxe a definição certa, mas deu como exemplo "palmeiras" e "gorjeiam", que nem rimam.
 
 Referências técnicas: [agentes LangChain](https://docs.langchain.com/oss/javascript/langchain/agents), [ChatDeepSeek](https://docs.langchain.com/oss/javascript/integrations/chat/deepseek), [saída estruturada](https://docs.langchain.com/oss/javascript/langchain/structured-output).
 
@@ -87,7 +112,7 @@ Erros têm formato `{error:{code,message}}`. Mensagens aceitam até 2.000 caract
 
 O limitador básico permite 30 solicitações por rota, por identificador, por minuto e mantém estado apenas no processo atual. Por padrão, todas as solicitações compartilham o identificador local; `X-Forwarded-For` é ignorado. Defina `TRUST_PROXY_HEADERS=cloudflare` somente em implantação protegida por uma borda Cloudflare que sobrescreve `CF-Connecting-IP`; nesse caso a cota usa esse IP. Defina `TRUST_PROXY_HEADERS=proxy` somente atrás de um único proxy reverso que acrescenta o endereço do visitante ao fim de `X-Forwarded-For`, como o Traefik do Easypanel; a cota usa esse último endereço, e os anteriores, que o visitante pode forjar, são ignorados. Uma implantação pública de maior escala deve aplicar autenticação e limite distribuído no provedor de hospedagem.
 
-Conversas e gravações não são persistidas pela aplicação. Durante a conversa, texto/histórico são enviados ao DeepSeek e gravações/texto falado à OpenAI. O tratamento nesses serviços segue as configurações e políticas das contas usadas.
+Conversas e gravações não são persistidas pela aplicação. Durante a conversa, texto/histórico são enviados ao DeepSeek, gravações/texto falado à OpenAI e, quando o poeta pesquisa, os termos de busca que ele escolheu vão à Wikipédia e ao Wikisource. O tratamento nesses serviços segue as configurações e políticas das contas usadas.
 
 ## Verificação e publicação
 

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { MAX_SPEECH_BYTES, POET_VOICE_INSTRUCTIONS } from "../lib/server/voice";
 import { clientIdentifier, createApiHandlers, gestureIntent, getStatus, parseAgentResponse, RateLimiter, readConfig, validateChat } from "../lib/server/api";
+import { MAX_AGENT_MODEL_CALLS } from "../lib/server/poet-agent";
 
 const configured = readConfig({ DEEPSEEK_API_KEY: "deepseek-test-only", OPENAI_API_KEY: "openai-test-only" });
 const structuredReply = (text = "Eu sou Gonçalves Dias.", gesture = "none") => ({ text, gesture });
@@ -107,7 +108,7 @@ describe("provider routes", () => {
     expect(JSON.stringify(result)).not.toContain("Gonçalves Dias foi");
     expect(JSON.stringify(result)).not.toContain("test-only");
     expect(fetcher.mock.calls.length).toBeGreaterThan(1);
-    expect(fetcher.mock.calls.length).toBeLessThanOrEqual(4);
+    expect(fetcher.mock.calls.length).toBeLessThanOrEqual(MAX_AGENT_MODEL_CALLS);
   });
   it("validates JSON and streamed request size before calling a provider", async () => {
     const { api, fetcher } = setup();
@@ -161,6 +162,49 @@ describe("provider routes", () => {
     form.set("audio", new File(["text"], "data.txt", { type: "text/plain" }));
     expect((await api.transcribe(new Request("http://localhost/api/transcribe", { method: "POST", body: form }))).status).toBe(415);
     expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+describe("pesquisa durante a conversa", () => {
+  const researchCall = {
+    ...agentCompletion(),
+    choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: [{
+      id: "call_research", type: "function", function: { name: "pesquisar", arguments: JSON.stringify({ source: "enciclopedia", query: "Ainda uma vez adeus" }) },
+    }] }, finish_reason: "tool_calls" }],
+  };
+  const answer = "Esse poema é meu, e o escrevi para Ana Amélia.";
+
+  function routed(wikipedia: (url: URL) => Response) {
+    const seen: { url: URL; signal?: AbortSignal | null }[] = [];
+    let modelTurns = 0;
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      seen.push({ url, signal: init?.signal });
+      if (url.host === "pt.wikipedia.org") return wikipedia(url);
+      return Response.json(++modelTurns === 1 ? researchCall : agentCompletion(answer));
+    });
+    return { fetcher, seen };
+  }
+
+  it("pesquisa pela mesma conexão do chat, sob o mesmo prazo, e responde com o que encontrou", async () => {
+    const { fetcher, seen } = routed(url => Response.json(url.searchParams.get("list") === "search"
+      ? { query: { search: [{ ns: 0, title: "Gonçalves Dias", snippet: "" }] } }
+      : { query: { pages: [{ title: "Gonçalves Dias", extract: "Várias de suas peças, inclusive \"Ainda uma vez — Adeus\", foram escritas para Ana Amélia." }] } }));
+    const api = createApiHandlers({ config: () => configured, fetch: fetcher });
+    const response = await api.chat(post({ message: "A quem pertence Ainda uma vez, adeus?" }));
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { text: string }).text).toBe(answer);
+    const lookups = seen.filter(request => request.url.host === "pt.wikipedia.org");
+    expect(lookups).toHaveLength(2);
+    expect(lookups.every(request => request.signal instanceof AbortSignal)).toBe(true);
+  });
+
+  it("uma Wikipédia fora do ar não derruba a resposta do poeta", async () => {
+    const { fetcher } = routed(() => new Response("indisponível", { status: 503 }));
+    const api = createApiHandlers({ config: () => configured, fetch: fetcher });
+    const response = await api.chat(post({ message: "A quem pertence Ainda uma vez, adeus?" }));
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { text: string }).text).toBe(answer);
   });
 });
 
