@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { MAX_SPEECH_BYTES, POET_VOICE_INSTRUCTIONS } from "../lib/server/voice";
 import { clientIdentifier, createApiHandlers, gestureIntent, getStatus, parseAgentResponse, RateLimiter, readConfig, validateChat } from "../lib/server/api";
 
 const configured = readConfig({ DEEPSEEK_API_KEY: "deepseek-test-only", OPENAI_API_KEY: "openai-test-only" });
@@ -244,3 +245,160 @@ describe("request protection and cancellation", () => {
   });
 });
 
+
+describe("natural voice and streamed speech", () => {
+  it("uses masculine conversational delivery without changing the text or playback speed", async () => {
+    const fetcher = vi.fn(async () => new Response(new Uint8Array([0, 1]), { headers: { "Content-Type": "application/octet-stream" } }));
+    const api = createApiHandlers({ config: () => configured, fetch: fetcher });
+    const text = "Eu recebo você com alegria. Como está?";
+    const response = await api.speech(post({ text, format: "pcm" }));
+    await response.arrayBuffer();
+    const [, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit];
+    const payload = JSON.parse(init.body as string);
+    expect(payload).toEqual({ model: "gpt-4o-mini-tts", input: text, voice: "cedar", response_format: "pcm", speed: 1, instructions: POET_VOICE_INSTRUCTIONS });
+    expect(payload.instructions).toContain("voz masculina adulta");
+    expect(payload.instructions).toContain("português brasileiro");
+    expect(payload.instructions).toContain("sem declamação");
+    expect(payload.instructions).toContain("Pronuncie exatamente o texto recebido");
+  });
+
+  it("omits unsupported delivery instructions for a legacy TTS model", async () => {
+    const fetcher = vi.fn(async () => new Response(new Uint8Array([0, 1]), { headers: { "Content-Type": "audio/pcm" } }));
+    const api = createApiHandlers({ config: () => ({ ...configured, ttsModel: "tts-1", voice: "onyx" }), fetch: fetcher });
+    await (await api.speech(post({ text: "Olá!", format: "pcm" }))).arrayBuffer();
+    const [, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toMatchObject({ model: "tts-1", voice: "onyx" });
+    expect(JSON.parse(init.body as string)).not.toHaveProperty("instructions");
+  });
+
+  it("delivers the first PCM chunk before the provider finishes synthesizing", async () => {
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    const upstream = new ReadableStream<Uint8Array>({ start(controller) { source = controller; controller.enqueue(new Uint8Array([1, 2, 3])); } });
+    const api = createApiHandlers({ config: () => configured, fetch: async () => new Response(upstream, { headers: { "Content-Type": "audio/pcm" } }) });
+    const response = await api.speech(post({ text: "Olá!", format: "pcm" }));
+    expect(response.headers.get("content-type")).toBe("audio/pcm");
+    expect(response.headers.get("x-audio-sample-rate")).toBe("24000");
+    const reader = response.body!.getReader();
+    expect(await reader.read()).toEqual({ done: false, value: new Uint8Array([1, 2, 3]) });
+    // Network chunks may split a 16-bit sample; only the completed stream must be even.
+    source.enqueue(new Uint8Array([4]));
+    source.close();
+    expect(await reader.read()).toEqual({ done: false, value: new Uint8Array([4]) });
+    expect(await reader.read()).toEqual({ done: true, value: undefined });
+  });
+
+  it("keeps the deadline active after the first audio chunk and stops a stalled stream", async () => {
+    vi.useFakeTimers();
+    try {
+      let signal!: AbortSignal;
+      const cancel = vi.fn();
+      const api = createApiHandlers({ config: () => configured, timeoutMs: 20, fetch: async (_url, init) => {
+        signal = init!.signal as AbortSignal;
+        return new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1, 2])); }, cancel }), { headers: { "Content-Type": "audio/pcm" } });
+      } });
+      const response = await api.speech(post({ text: "Olá!", format: "pcm" }));
+      const reader = response.body!.getReader();
+      await reader.read();
+      const pending = expect(reader.read()).rejects.toMatchObject({ code: "PROVIDER_TIMEOUT" });
+      await vi.advanceTimersByTimeAsync(21);
+      await pending;
+      expect(signal.aborted).toBe(true);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(["request", "reader"])("cancels provider generation when the %s is cancelled", async kind => {
+    const requestController = new AbortController();
+    let signal!: AbortSignal;
+    const cancel = vi.fn();
+    const api = createApiHandlers({ config: () => configured, fetch: async (_url, init) => {
+      signal = init!.signal as AbortSignal;
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1, 2])); }, cancel }), { headers: { "Content-Type": "audio/pcm" } });
+    } });
+    const response = await api.speech(post({ text: "Olá!", format: "pcm" }, {}, requestController.signal));
+    const reader = response.body!.getReader();
+    await reader.read();
+    if (kind === "request") {
+      const pending = expect(reader.read()).rejects.toMatchObject({ code: "REQUEST_CANCELLED" });
+      requestController.abort();
+      await pending;
+    } else await reader.cancel();
+    expect(signal.aborted).toBe(true);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes a provider body that arrives after cancellation", async () => {
+    const requestController = new AbortController();
+    const cancel = vi.fn();
+    const api = createApiHandlers({ config: () => configured, fetch: async () => {
+      requestController.abort();
+      return new Response(new ReadableStream({ cancel }), { headers: { "Content-Type": "audio/pcm" } });
+    } });
+    const response = await api.speech(post({ text: "Olá!", format: "pcm" }, {}, requestController.signal));
+    expect(response.status).toBe(499);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+  it("returns a safe timeout even if the provider transport ignores cancellation", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = createApiHandlers({ config: () => configured, timeoutMs: 20, fetch: () => new Promise<Response>(() => {}) });
+      const responsePromise = api.speech(post({ text: "Olá!", format: "pcm" }));
+      await vi.advanceTimersByTimeAsync(21);
+      const response = await responsePromise;
+      expect(response.status).toBe(504);
+      expect(await response.json()).toMatchObject({ error: { code: "PROVIDER_TIMEOUT" } });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("rejects invalid formats and non-PCM provider content before streaming", async () => {
+    const fetcher = vi.fn(async () => Response.json({ error: "private provider detail" }));
+    const api = createApiHandlers({ config: () => configured, fetch: fetcher });
+    expect((await api.speech(post({ text: "Olá!", format: "mp3" }))).status).toBe(400);
+    expect(fetcher).not.toHaveBeenCalled();
+    const response = await api.speech(post({ text: "Olá!", format: "pcm" }));
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ error: { code: "INVALID_AUDIO" } });
+  });
+
+  it("rejects declared oversized PCM before sending headers", async () => {
+    const cancel = vi.fn();
+    const api = createApiHandlers({ config: () => configured, fetch: async () => new Response(new ReadableStream({ cancel }), { headers: { "Content-Type": "audio/pcm", "Content-Length": String(MAX_SPEECH_BYTES + 2) } }) });
+    const response = await api.speech(post({ text: "Olá!", format: "pcm" }));
+    expect(response.status).toBe(502);
+    expect(await response.json()).toMatchObject({ error: { code: "INVALID_RESPONSE" } });
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("enforces the byte limit when a provider omits Content-Length", async () => {
+    const cancel = vi.fn();
+    const chunk = new Uint8Array(1024 * 1024);
+    let signal!: AbortSignal;
+    const api = createApiHandlers({ config: () => configured, fetch: async (_url, init) => {
+      signal = init!.signal as AbortSignal;
+      return new Response(new ReadableStream({ pull(controller) { controller.enqueue(chunk); }, cancel }), { headers: { "Content-Type": "audio/pcm" } });
+    } });
+    const response = await api.speech(post({ text: "Olá!", format: "pcm" }));
+    const reader = response.body!.getReader();
+    for (let i = 0; i < MAX_SPEECH_BYTES / chunk.length; i += 1) expect((await reader.read()).value?.length).toBe(chunk.length);
+    await expect(reader.read()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+    expect(signal.aborted).toBe(true);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([new Uint8Array(), new Uint8Array([1, 2, 3])])("rejects empty or truncated PCM without inventing a silent ending", async bytes => {
+    const api = createApiHandlers({ config: () => configured, fetch: async () => new Response(bytes, { headers: { "Content-Type": "audio/pcm" } }) });
+    const response = await api.speech(post({ text: "Olá!", format: "pcm" }));
+    await expect(response.arrayBuffer()).rejects.toMatchObject({ code: "INVALID_AUDIO" });
+  });
+
+  it("sanitizes errors raised after audio has started", async () => {
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    const api = createApiHandlers({ config: () => configured, fetch: async () => new Response(new ReadableStream({ start(controller) { source = controller; controller.enqueue(new Uint8Array([1, 2])); } }), { headers: { "Content-Type": "audio/pcm" } }) });
+    const response = await api.speech(post({ text: "Olá!", format: "pcm" }));
+    const reader = response.body!.getReader();
+    await reader.read();
+    source.error(new Error("private-provider-error openai-test-only"));
+    await expect(reader.read()).rejects.toMatchObject({ code: "PROVIDER_UNAVAILABLE", message: "Não foi possível receber a voz. Tente novamente." });
+  });
+});

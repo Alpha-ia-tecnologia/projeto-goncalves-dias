@@ -1,0 +1,63 @@
+{
+  "name": "Quadro de conversa com pedestal",
+  "revision": "quadro-chat-1",
+  "sourceFile": "Visualizar_Cenario (1).html",
+  "sourceSha256": "1cd6d22519791f51326b17d7d102061a36603c92b1d6f2e7ba386d76c177fd43",
+  "sourceModule": "quadro-chat",
+  "sourceModuleSha256": "5463540ec5819f88a7711efc8d505b8a10a929f1ea74940e74322bf201ee2be2",
+  "asset": "quadro-chat.glb",
+  "sha256": "d0002828841287be236875b085c2163fdbc6b890bbab8c1e7b96ed0c2b9f5f5f",
+  "bytes": 1757716,
+  "units": "meters",
+  "front": "+Z",
+  "origin": "floor",
+  "screen": {
+    "name": "Tela_Chat",
+    "size": [
+      0.96,
+      1.2
+    ],
+    "center": [
+      0,
+      1.48,
+      0.11
+    ],
+    "aspect": "4:5"
+  },
+  "frame": {
+    "width": 1.188,
+    "height": 1.428,
+    "centerY": 1.48
+  },
+  "bounds": {
+    "min": [
+      -0.593999981880188,
+      0.003000000026077032,
+      -0.33500000834465027
+    ],
+    "max": [
+      0.593999981880188,
+      2.259000062942505,
+      0.33500003814697266
+    ]
+  },
+  "geometry": {
+    "sourceMeshes": 101,
+    "mergedMeshes": 10,
+    "triangles": 30060,
+    "materials": 6,
+    "textures": 3
+  },
+  "preservedGroups": [
+    "Moldura_Entalhada",
+    "Pedestal_Torneado",
+    "Ferragens",
+    "Interface_Chat"
+  ],
+  "textures": {
+    "wood": "Exact walnut color and tangent-space normal PNG/JPEG bytes from the existing room GLB.",
+    "plaque": "Original Georgia inscription GONÇALVES DIAS rebuilt as local PNG.",
+    "screen": "Plain ivory; demonstration messages removed for the application interface."
+  },
+  "externalDependencies": []
+}

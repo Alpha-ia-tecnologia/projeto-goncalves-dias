@@ -1,0 +1,52 @@
+{
+  "revision": "mocap-4",
+  "generator": "work/build-mocap-clips.mjs",
+  "skeleton": "public/models/avatar-manifest.json",
+  "retarget": "world-space rotation delta measured from each rig's own rest pose",
+  "clips": [
+    {
+      "name": "fala-1",
+      "source": "Talking.fbx",
+      "frames": 119,
+      "duration": 3.9333,
+      "rootMotion": "keep",
+      "travelled": 0.2635,
+      "speed": 0.067,
+      "bones": 29,
+      "bytes": 40426
+    },
+    {
+      "name": "fala-2",
+      "source": "Talking (1).fbx",
+      "frames": 114,
+      "duration": 3.7667,
+      "rootMotion": "keep",
+      "travelled": 0.1229,
+      "speed": 0.0326,
+      "bones": 29,
+      "bytes": 38765
+    },
+    {
+      "name": "cumprimento",
+      "source": "Shaking Hands 2.fbx",
+      "frames": 132,
+      "duration": 4.3667,
+      "rootMotion": "keep",
+      "travelled": 0.765,
+      "speed": 0.1752,
+      "bones": 29,
+      "bytes": 44713
+    },
+    {
+      "name": "caminhada",
+      "source": "Walk In Circle.fbx",
+      "frames": 522,
+      "duration": 17.3667,
+      "rootMotion": "inPlace",
+      "travelled": 14.1866,
+      "speed": 0.8169,
+      "bones": 29,
+      "bytes": 173015
+    }
+  ]
+}

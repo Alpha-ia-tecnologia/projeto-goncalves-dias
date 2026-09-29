@@ -1,0 +1,97 @@
+{
+  "name": "Gabinete de Gonçalves Dias",
+  "revision": "gabinete-1",
+  "sourceFile": "Visualizar_Cenario.html",
+  "sourceSha256": "de399704a7c04843875e05e014e06955f51b11dfa38ead186e0d1b008c5ab027",
+  "asset": "gabinete-goncalves-dias.glb",
+  "sha256": "a6bd464ddfa2658ea31c58b0e90072daaa2ca67194da31140f8b2a59b5501cb8",
+  "bytes": 11546728,
+  "units": "meters",
+  "room": {
+    "width": 8.8,
+    "depth": 7.2,
+    "height": 4.15,
+    "floorY": 0.02,
+    "centerClearance": [
+      3,
+      3
+    ]
+  },
+  "bounds": {
+    "min": [
+      -4.4070000648498535,
+      -0.14000000059604645,
+      -5.050000190734863
+    ],
+    "max": [
+      14.25709056854248,
+      4.150000095367432,
+      4.950000286102295
+    ]
+  },
+  "geometry": {
+    "sourceMeshes": 2218,
+    "mergedMeshes": 44,
+    "triangles": 124636,
+    "materials": 42,
+    "textures": 13
+  },
+  "textures": {
+    "source": "Both embedded PNG atlases from the supplied HTML; original crops and tangent-space normal formula preserved.",
+    "colorEncoding": "JPEG quality 94/95 with 4:4:4 sampling",
+    "normalEncoding": "PNG lossless",
+    "procedural": "Original manuscript strokes and cane weave rebuilt as raster textures."
+  },
+  "lights": {
+    "sun": {
+      "color": 16769200,
+      "intensity": 3.4,
+      "position": [
+        8,
+        4.3,
+        3.7
+      ],
+      "target": [
+        -3.5,
+        0.2,
+        -3.4
+      ]
+    },
+    "points": [
+      [
+        "Luz_rebatida_central",
+        0,
+        3.5,
+        0.4,
+        35,
+        16770500
+      ],
+      [
+        "Luz_janela_1",
+        3.9,
+        2.9,
+        -1.5,
+        22,
+        16771276
+      ],
+      [
+        "Luz_janela_2",
+        3.9,
+        2.9,
+        1.5,
+        22,
+        16771276
+      ],
+      [
+        "Luz_rebatida_livros",
+        -2.9,
+        2.5,
+        2.7,
+        18,
+        12241884
+      ]
+    ],
+    "shadowPolicy": "Directional sun only; point lights do not cast shadows."
+  },
+  "externalDependencies": []
+}

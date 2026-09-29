@@ -1,4 +1,5 @@
 import { PoetAgentError, runPoetAgent } from "./poet-agent";
+import { MAX_SPEECH_BYTES, POET_VOICE_INSTRUCTIONS, SPEECH_SAMPLE_RATE } from "./voice";
 import { VOICES, type ChatMessage, type ChatResponse, type Gesture, type ServiceStatus } from "../contracts";
 
 export interface ServerConfig {
@@ -251,6 +252,116 @@ export function createApiHandlers(options: {
     }
   }
 
+  async function streamPcmSpeech(request: Request, init: RequestInit): Promise<Response> {
+    if (request.signal.aborted) throw new ApiError(499, "REQUEST_CANCELLED", "A solicitação foi interrompida.");
+    const controller = new AbortController();
+    let timedOut = false;
+    let finished = false;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let output: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let rejectCancelled: (reason: ApiError) => void = () => {};
+    const cancelled = new Promise<never>((_, reject) => { rejectCancelled = reject; });
+    const safeError = (error?: unknown): ApiError => {
+      if (timedOut) return new ApiError(504, "PROVIDER_TIMEOUT", "A voz demorou para responder. Tente novamente.");
+      if (request.signal.aborted) return new ApiError(499, "REQUEST_CANCELLED", "A solicitação foi interrompida.");
+      return error instanceof ApiError ? error
+        : new ApiError(502, "PROVIDER_UNAVAILABLE", "Não foi possível receber a voz. Tente novamente.");
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      request.signal.removeEventListener("abort", cancelRequest);
+      controller.signal.removeEventListener("abort", aborted);
+    };
+    const cancelReader = async (reason?: unknown) => {
+      if (!reader) return;
+      try { await reader.cancel(reason); } catch { /* The upstream connection may already be closed. */ }
+      reader.releaseLock();
+    };
+    const fail = (error: ApiError) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      output?.error(error);
+      controller.abort();
+      void cancelReader(error);
+    };
+    const aborted = () => {
+      const error = safeError();
+      rejectCancelled(error);
+      fail(error);
+    };
+    const cancelRequest = () => controller.abort();
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+    controller.signal.addEventListener("abort", aborted, { once: true });
+    request.signal.addEventListener("abort", cancelRequest, { once: true });
+
+    try {
+      // This race also bounds transports that ignore AbortSignal. Cleanup belongs
+      // to the body lifecycle, never to the arrival of the response headers.
+      const response = await Promise.race([
+        fetcher("https://api.openai.com/v1/audio/speech", { ...init, signal: controller.signal }).then(response => {
+          // A custom transport may settle after cancellation; close that body too.
+          if (controller.signal.aborted) {
+            void response.body?.cancel().catch(() => {});
+            throw safeError();
+          }
+          return response;
+        }),
+        cancelled,
+      ]);
+      if (!response.ok) {
+        void response.body?.cancel().catch(() => {});
+        throw upstreamError(response.status, "OpenAI");
+      }
+      const mime = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
+      if (!response.body || !["audio/pcm", "application/octet-stream"].includes(mime ?? "")) {
+        void response.body?.cancel().catch(() => {});
+        throw new ApiError(502, "INVALID_AUDIO", "Não foi possível gerar um áudio válido. Tente novamente.");
+      }
+      if (Number(response.headers.get("content-length")) > MAX_SPEECH_BYTES) {
+        void response.body.cancel().catch(() => {});
+        throw new ApiError(502, "INVALID_RESPONSE", "O áudio retornado ultrapassou o tamanho permitido.");
+      }
+      reader = response.body.getReader();
+      let bytes = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        start(streamController) { output = streamController; },
+        async pull(streamController) {
+          try {
+            const { done, value } = await Promise.race([reader!.read(), cancelled]);
+            if (finished) return;
+            if (done) {
+              if (bytes < 2 || bytes % 2 !== 0) throw new ApiError(502, "INVALID_AUDIO", "O áudio recebido está incompleto. Tente novamente.");
+              finished = true;
+              cleanup();
+              reader!.releaseLock();
+              streamController.close();
+              return;
+            }
+            bytes += value.byteLength;
+            if (bytes > MAX_SPEECH_BYTES) throw new ApiError(502, "INVALID_RESPONSE", "O áudio retornado ultrapassou o tamanho permitido.");
+            streamController.enqueue(value);
+          } catch (error) { fail(safeError(error)); }
+        },
+        async cancel(reason) {
+          if (finished) return;
+          finished = true;
+          cleanup();
+          controller.abort();
+          await cancelReader(reason);
+        },
+      });
+      return new Response(stream, { headers: {
+        "Content-Type": "audio/pcm", "X-Audio-Sample-Rate": String(SPEECH_SAMPLE_RATE),
+        "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+      } });
+    } catch (error) {
+      const failure = safeError(error);
+      fail(failure);
+      throw failure;
+    }
+  }
+
   async function upstreamJson(response: Response): Promise<unknown> {
     const bytes = await readLimited(response.body, UPSTREAM_JSON_LIMIT, new ApiError(502, "INVALID_RESPONSE", "O serviço retornou uma resposta muito grande."));
     try { return JSON.parse(new TextDecoder().decode(bytes)); } catch {
@@ -324,6 +435,11 @@ export function createApiHandlers(options: {
       if (error instanceof PoetAgentError && error.code === "AGENT_LIMIT") {
         throw new ApiError(502, "AGENT_LIMIT", "Não consegui concluir minha resposta. Pode reformular sua pergunta?");
       }
+      // The visitor is told something gentle; whoever runs the server is told
+      // what actually happened. Without this the 502 says nothing at all, and
+      // the reply that caused it is gone by the time anyone comes to ask.
+      console.error("[chat] a resposta do poeta foi recusada:",
+        error instanceof PoetAgentError ? error.detail ?? error.message : error);
       throw new ApiError(502, "INVALID_RESPONSE", "Não consegui preparar minha resposta. Tente novamente.");
     } finally {
       clearTimeout(timer);
@@ -340,16 +456,20 @@ export function createApiHandlers(options: {
     if (typeof voice !== "string" || !VOICES.includes(voice as typeof VOICES[number])) {
       throw new ApiError(400, "INVALID_VOICE", "A voz selecionada não é válida.");
     }
+    const format = input.format ?? "wav";
+    if (format !== "wav" && format !== "pcm") throw new ApiError(400, "INVALID_FORMAT", "Escolha um formato de áudio válido.");
     const key = requireKey(config.openaiKey, "OpenAI");
-    const audio = await upstream(request, "https://api.openai.com/v1/audio/speech", {
+    const init: RequestInit = {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: config.ttsModel, input: text, voice, response_format: "wav",
-        instructions: "Fale em português brasileiro, com voz masculina calma, acolhedora e expressiva. Dicção natural e ritmo moderado. Use pausas breves e uma discreta sensibilidade poética, sem teatralidade exagerada.",
+        model: config.ttsModel, input: text, voice, response_format: format, speed: 1,
+        ...(config.ttsModel.startsWith("gpt-4o-mini-tts") ? { instructions: POET_VOICE_INSTRUCTIONS } : {}),
       }),
-    }, "OpenAI", async response => {
-      const bytes = await readLimited(response.body, 20 * 1024 * 1024, new ApiError(502, "INVALID_RESPONSE", "O áudio retornado ultrapassou o tamanho permitido."));
+    };
+    if (format === "pcm") return streamPcmSpeech(request, init);
+    const audio = await upstream(request, "https://api.openai.com/v1/audio/speech", init, "OpenAI", async response => {
+      const bytes = await readLimited(response.body, MAX_SPEECH_BYTES, new ApiError(502, "INVALID_RESPONSE", "O áudio retornado ultrapassou o tamanho permitido."));
       if (bytes.length < 44 || new TextDecoder().decode(bytes.subarray(0, 4)) !== "RIFF" || new TextDecoder().decode(bytes.subarray(8, 12)) !== "WAVE") {
         throw new ApiError(502, "INVALID_AUDIO", "Não foi possível gerar um áudio válido. Tente novamente.");
       }

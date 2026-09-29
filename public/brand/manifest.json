@@ -1,0 +1,100 @@
+{
+  "name": "Marca da Escola Educa Prime",
+  "revision": "educaprime-5",
+  "addedOn": "2026-09-20",
+  "processing": {
+    "trim": "Margens transparentes removidas: o lockup horizontal fica em 2085 x 371 e o emblema em 1369 x 1064.",
+    "resize": "Largura maxima de 1024 px no wordmark e 320 px no emblema, sem ampliacao.",
+    "webp": "quality 92, alphaQuality 100, effort 6",
+    "png": "Paleta de 256 cores com dither 0,6, apenas como alternativa para navegadores sem WebP."
+  },
+  "assets": [
+    {
+      "file": "educaprime-wordmark.webp",
+      "bytes": 56422,
+      "sha256": "ca13ece016ab26d67c7fe1918e233eb9fe91c831c452eb16618ac641abc720e8",
+      "width": 1024,
+      "height": 182,
+      "usedBy": [
+        "lib/avatar/school-branding.ts (textura da placa no gabinete)"
+      ]
+    },
+    {
+      "file": "educaprime-badge.webp",
+      "bytes": 23766,
+      "sha256": "04bbcfc3ff798ad6982bc4e95b786ca7fb9730adc2a50f4b25b30b1f9b35048d",
+      "width": 320,
+      "height": 249,
+      "usedBy": [
+        "components/ConversationApp.tsx (marca no cabecalho do quadro)"
+      ]
+    },
+    {
+      "file": "educaprime-badge.png",
+      "bytes": 23126,
+      "sha256": "0a9a619f26ead2cbd7b5171ef76f89bb58b79a7579d863422e0df3eda91d8881",
+      "width": 320,
+      "height": 249,
+      "usedBy": [
+        "components/ConversationApp.tsx (alternativa do elemento picture)"
+      ]
+    }
+  ],
+  "placement": {
+    "gabinete": {
+      "object": "Placa_Escola_Educa_Prime",
+      "artwork": "educaprime-wordmark.webp",
+      "roomCenter": [
+        -3.09,
+        3.52,
+        -3.577
+      ],
+      "frame": [
+        1.52,
+        0.369,
+        0.046
+      ],
+      "note": "Trecho alto e livre da parede do fundo (x -3,92..-2,10, y 2,45..3,78), acima da cabeca do poeta. A arte fica 100% visivel e a moldura inteira dentro do enquadramento nas vistas de conversa e imersiva. Na faixa baixa anterior a arte ficava 50-74% coberta pelo poeta e pelo quadro.",
+      "artworkSize": [
+        1.4,
+        0.2488
+      ]
+    },
+    "quadro": {
+      "element": ".school-mark",
+      "note": "Cabeçalho do painel de conversa, projetado sobre a malha Tela_Chat.",
+      "artwork": "educaprime-badge.webp"
+    }
+  },
+  "externalDependencies": [],
+  "sources": [
+    {
+      "file": "logo-educaprime-horizontal-original.png",
+      "bytes": 562765,
+      "sha256": "3a130b382a70393bf368443e01773561cc8dfa255976224b9add0b83fda80f44",
+      "width": 2172,
+      "height": 724,
+      "note": "Lockup horizontal fornecido pela escola; a arte útil mede 2085 × 371.",
+      "usedFor": "Placa da parede do gabinete, a partir da revisão educaprime-2."
+    },
+    {
+      "file": "logo-educaprime-emblema-original.png",
+      "bytes": 1319533,
+      "sha256": "b9ac3c1f35268116fc3fb1fa40a8eb9ff616d05b5cad670f68084852163fcab5",
+      "width": 1451,
+      "height": 1084,
+      "note": "Emblema EP fornecido pela escola; a arte util mede 1369 x 1064.",
+      "usedFor": "Marca no cabecalho do quadro, a partir da revisao educaprime-5."
+    }
+  ],
+  "retired": [
+    {
+      "files": [
+        "educaprime-logo.webp",
+        "educaprime-logo.png"
+      ],
+      "revision": "educaprime-4",
+      "note": "Marca empilhada usada no cabecalho ate a revisao educaprime-4; substituida pelo emblema EP."
+    }
+  ]
+}
