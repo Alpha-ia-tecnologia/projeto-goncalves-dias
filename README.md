@@ -411,6 +411,14 @@ Três decisões tiveram medida por trás:
 
 Os testes estão no bloco "a fala capturada" de `tests/mocap-rig.test.ts`.
 
+### Fala contida e retorno ao repouso
+
+Os clipes de fala usam 60% da amplitude capturada (45% na cabe?a e no pesco?o) e 78% da velocidade. A voz e a boca mant?m seu ritmo original. A redu??o atua na pose, separadamente do peso que decide quem controla o corpo, para n?o reintroduzir gestos procedurais sobre a captura. Inclina??es do tronco cedem ao clipe; os acentos de cabe?a permanecem discretos.
+
+Depois da ?ltima palavra, a postura atravessa 0,6 s de pausa e se desfaz com amortecimento mais lento que a entrada. Os ajustes de repouso acompanham a sa?da do clipe. Respira??o, oscila??o postural e pequenas acomoda??es dos antebra?os continuam entre as mudan?as maiores de postura; desativar movimentos continua restaurando a pose neutra.
+
+A regress?o ? verificada em `tests/speech-composure.test.ts` com o esqueleto e os dois clipes reais: velocidade e amplitude contidas, soltura em diferentes fases, retomada, repouso cont?nuo e movimento reduzido. A su?te existente verifica tamb?m os p?s plantados, os acenos e a consist?ncia entre taxas de quadros. Essas medidas n?o substituem a avalia??o visual da naturalidade.
+
 ## Caminhada pelo gabinete
 
 O botão **Caminhar** abre os controles de passeio e uma vista ampla pela entrada do gabinete. Clique ou toque em um ponto livre do piso, ou escolha um dos destinos no menu e pressione **Ir**. Arrastar continua controlando a câmera; um arrasto, clique em móvel ou seleção no chat não inicia passos. O marcador dourado indica o destino atual. O menu também permite navegar usando teclado.

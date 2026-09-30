@@ -180,6 +180,10 @@ const HEAD_STEADYING = 0.7;
 const SPEECH_CLIPS = ["fala-1", "fala-2"];
 /** Seconds of silence a stretch of speech survives, bridging the gaps between words. */
 const SPEECH_HOLD = 0.6;
+/** Calm the captured conversation without slowing the audio or the mouth. */
+const SPEECH_PLAYBACK_RATE = 0.78;
+const SPEECH_CAPTURE_STRENGTH = 0.60;
+const SPEECH_HEAD_STRENGTH = 0.45;
 /**
  * Everything the walk owns, which a clip may decline to drive: the legs, which
  * the planted-foot solver holds to the ground, and the pelvis itself, which is
@@ -397,6 +401,10 @@ export class AvatarRig {
     return this.clipAboveTheHips ? this.clipWeight : 0;
   }
 
+  private get capturedSpeechShare() {
+    return this.clipSpeaking ? this.clipWeight : 0;
+  }
+
   get clipPlaying() {
     return this.clipWeight > 0;
   }
@@ -474,7 +482,15 @@ export class AvatarRig {
     clip.pose(seconds, (name, rotation) => {
       if (this.clipAboveTheHips && BELOW_THE_HIPS.has(name)) return;
       const rest = this.get(name);
-      if (rest) rest.bone.quaternion.slerp(rotation, weight);
+      if (rest) {
+        // The scan's bend budget protects the skin, but the source talking
+        // clips still contain very fast arm strokes. Reduce their whole
+        // excursion, keeping the captured timing and coordination intact.
+        const strength = this.clipSpeaking
+          ? (name === "Cabeca" || name === "Pescoco" ? SPEECH_HEAD_STRENGTH : SPEECH_CAPTURE_STRENGTH)
+          : 1;
+        rest.bone.quaternion.slerp(rotation, weight * strength);
+      }
     });
     // A clip lending only its upper body leaves the ground to whatever owns the
     // legs, so it keeps neither its footfalls nor the rise and fall they carry.
@@ -482,6 +498,7 @@ export class AvatarRig {
     // pelvis carries it while the foot solver keeps the shoes planted.
     if (this.clipAboveTheHips && !this.clipSpeaking) this.clipRoot.set(0, 0, 0);
     else clip.rootAt(seconds, this.clipRoot);
+    if (this.clipSpeaking) this.clipRoot.multiplyScalar(SPEECH_CAPTURE_STRENGTH);
     this.model.updateMatrixWorld(true);
     this.steadyHead(this.clipAboveTheHips ? weight * (walking?.weight ?? 0) : 0);
   }
@@ -619,7 +636,7 @@ export class AvatarRig {
     // Talking plays on the absolute clock: at a given instant it shows the same
     // moment at any frame rate, and each stretch of speech opens wherever the
     // loop happens to be, so no two begin alike.
-    if (this.clipSpeaking) return now;
+    if (this.clipSpeaking) return now * SPEECH_PLAYBACK_RATE;
     if (!clip.inPlace) return elapsed;
     // No gait this frame (the walk is fading out and the stage stopped
     // reporting it): hold the last moment rather than jump to the clip's start.
@@ -1165,7 +1182,7 @@ export class AvatarRig {
     const stance = stances[Math.floor(index / 2) % stances.length];
     const active = now - this.lastVoiceAt < 0.58 ? 1 : 0;
     const walkWeight = walking?.weight ?? 0;
-    const weight = this.dampChannel("body-activity", active, delta, 3.0, 0, 1) * (1 - walkWeight * 0.8);
+    const weight = this.dampChannel("body-activity", active * (1 - this.capturedSpeechShare), delta, 3.0, 0, 1) * (1 - walkWeight * 0.8);
     const duration = CONVERSATION_DURATIONS[index % CONVERSATION_DURATIONS.length];
     const elapsed = now - this.conversationStarted;
     const phrase = smooth(0.12, 1.35, elapsed) * (1 - smooth(duration - 1.03, duration + 0.12, elapsed));
@@ -1193,7 +1210,7 @@ export class AvatarRig {
     let plantFeet = false;
     if (pelvis && this.legs.available) {
       const sway = idle.sway * posture;
-      const shift = this.dampChannel("pelvis-shift", stance[0] * weight, delta, 2.6) + idle.shift * posture + sway * 0.0021 + transfer * 0.010 + speechShift + (walking?.body.shift ?? 0);
+      const shift = this.dampChannel("pelvis-shift", stance[0] * weight, delta, 2.6) + idle.shift * posture + sway * 0.0042 + transfer * 0.010 + speechShift + (walking?.body.shift ?? 0);
       const settle = this.dampChannel("pelvis-settle", -0.0038 * weight, delta, 2.6) + idle.settle * posture - Math.abs(transfer) * 0.0025 - pulse * 0.0035 + (walking?.body.lift ?? 0);
       const forward = this.dampChannel("pelvis-forward", stance[2] * weight, delta, 2.6) + idle.depth * posture + idle.swayDepth * posture * 0.0014 + pulse * 0.0025;
       const roll = this.dampChannel("pelvis-roll", stance[1] * weight, delta, 2.6) + idle.shift * posture * 0.36 + sway * 0.0028 + transfer * 0.0036 + speechShift * 0.36 + (walking?.body.roll ?? 0);
@@ -1232,7 +1249,7 @@ export class AvatarRig {
   }
 
   private poseHead(now: number, delta: number, idle: IdleMotion, nodEnvelope: number, beats: BeatSample, gaze?: GazeInput) {
-    const idleWeight = 1 - this.speaking;
+    const idleWeight = 1 - Math.max(this.speaking, this.capturedSpeechShare);
     // Attentive listening and thinking hold the head stiller than idle waiting.
     const { listen, think, listenSide, thinkSide, backchannelAt } = this.attention;
     const headIdleWeight = idleWeight * (1 - nodEnvelope) * (1 - listen * 0.45 - think * 0.3);
@@ -1241,7 +1258,9 @@ export class AvatarRig {
     // gestures keep their exact envelopes.
     const chestFollow = idle.swayChest * idleWeight;
     const headFollow = idle.swayHead;
-    const speechHeadWeight = 1 - nodEnvelope * 0.9;
+    // The capture already moves the head. Keep a little audio emphasis, not
+    // a second full nod/attitude layered over the same movement.
+    const speechHeadWeight = (1 - nodEnvelope * 0.9) * (1 - this.capturedSpeechShare * 0.75);
     const voice = this.speaking * speechHeadWeight;
     const sigh = idle.sigh * idleWeight;
     // Speech settles the head into a phrase attitude, with a slight lean toward
@@ -1419,6 +1438,14 @@ export class AvatarRig {
   }
 
   private poseIdleArms(idle: IdleMotion, idleHands: number, wave: WaveSample) {
+    // Small, continuous adjustments remain visible between the less frequent
+    // changes of stance. Their clocks keep running while speech fades out.
+    for (const [side, sign] of HAND_SIDES) {
+      const free = idleHands; // The explicit wave is applied afterwards and owns its arm.
+      const relax = (idle.breath * 0.025 + idle.swayChest * sign * 0.012) * free;
+      this.rotate(`Antebraco.${side}#quiet`, AXIS_X, -relax);
+      this.rotate(`Mao.${side}#quiet`, AXIS_X, -relax * 0.45);
+    }
     // While waiting, the forearms occasionally come forward into a relaxed
     // resting posture for a while, then return to hanging beside the coat.
     const forward = idle.armsForward * idleHands;
@@ -1503,7 +1530,10 @@ export class AvatarRig {
     // syllable is. It holds across the gaps between words and lets go a little
     // after the last one; a body does not drop its talking posture at every
     // pause. Advanced every frame, so it never resumes from a stale value.
-    this.speechPresence = this.dampChannel("speech-presence", now - this.lastVoiceAt < SPEECH_HOLD ? 1 : 0, delta, 3.0, 0, 1);
+    const speechHeld = now - this.lastVoiceAt < SPEECH_HOLD;
+    // Release more slowly than entry: finish the movement and settle into
+    // quiet presence instead of dropping the talking posture with the audio.
+    this.speechPresence = this.dampChannel("speech-presence", speechHeld ? 1 : 0, delta, speechHeld ? 3.0 : 1.9, 0, 1);
     this.attention.update(now, attention, this.dampAttention, this.randomFor);
     this.applyClip(now, walking);
 
@@ -1526,7 +1556,8 @@ export class AvatarRig {
     // and speech even adds to it: see poseBody.
     const walkWeight = walking?.weight ?? 0;
     this.walkWeight = walkWeight;
-    this.poseBody(now, delta, idle, (1 - this.speaking) * (1 - walkWeight), (1 - this.speaking * 0.45) * (1 - walkWeight), walking);
+    const presence = Math.max(this.speaking, this.capturedSpeechShare);
+    this.poseBody(now, delta, idle, (1 - presence) * (1 - walkWeight), (1 - presence * 0.45) * (1 - walkWeight), walking);
     // After the trunk has been placed and the legs solved from the pelvis, and
     // before the arms are aimed, so a raised hand accounts for the chest under it.
     this.poseSpeechTrunk(now, delta);
