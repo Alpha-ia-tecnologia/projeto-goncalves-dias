@@ -229,6 +229,67 @@ function upstreamError(status: number, provider: string): ApiError {
   return new ApiError(502, "PROVIDER_ERROR", `O ${provider} não conseguiu concluir a solicitação. Tente novamente.`);
 }
 
+// Behind Easypanel the visitor never sees these 502s: the proxy swaps the body for
+// its own error page. The server log is the only place the reason survives - an
+// invalid model name, a revoked key - so it is written there, with keys redacted
+// and without the visitor's question.
+const REFUSAL_EXCERPT_BYTES = 2_048;
+
+function redactForLog(text: string): string {
+  return text
+    .replace(/sk-[A-Za-z0-9_-]{4,}/g, "sk-***")
+    .replace(/Bearer\s+\S+/gi, "Bearer ***")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
+}
+
+/** The provider's own words for a refusal, from its JSON error when there is one. */
+export function describeProviderRefusal(body: string): string {
+  let message = body;
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown; message?: unknown };
+    const nested = typeof parsed.error === "object" && parsed.error !== null ? (parsed.error as { message?: unknown }).message : parsed.error;
+    const candidate = nested ?? parsed.message;
+    if (typeof candidate === "string") message = candidate;
+  } catch { /* Not JSON: the raw text is the detail. */ }
+  return redactForLog(message) || "(sem detalhe)";
+}
+
+async function readExcerpt(body: ReadableStream<Uint8Array> | null, max: number): Promise<string> {
+  if (!body) return "";
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (length < max) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      length += value.byteLength;
+    }
+    if (length >= max) await reader.cancel();
+  } finally { reader.releaseLock(); }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+  return new TextDecoder().decode(bytes.subarray(0, max));
+}
+
+async function providerRefusal(response: Response, provider: string): Promise<ApiError> {
+  let excerpt = "";
+  try { excerpt = await readExcerpt(response.body, REFUSAL_EXCERPT_BYTES); } catch { /* The status still says enough. */ }
+  console.error(`[api] ${provider} recusou o pedido: HTTP ${response.status} | ${describeProviderRefusal(excerpt)}`);
+  return upstreamError(response.status, provider);
+}
+
+function logUnreachable(provider: string, error: unknown): void {
+  const cause = error instanceof Error ? error.cause : undefined;
+  const code = cause instanceof Error ? (cause as Error & { code?: unknown }).code ?? cause.message : undefined;
+  const what = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  console.error(`[api] não foi possível conectar ao ${provider}: ${redactForLog(code ? `${what} (${String(code)})` : what)}`);
+}
+
 export function createApiHandlers(options: {
   config: () => ServerConfig;
   fetch?: Fetcher;
@@ -248,15 +309,13 @@ export function createApiHandlers(options: {
     const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
     try {
       const response = await fetcher(url, { ...init, signal: controller.signal });
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw upstreamError(response.status, provider);
-      }
+      if (!response.ok) throw await providerRefusal(response, provider);
       return await consume(response);
     } catch (error) {
       if (error instanceof ApiError) throw error;
       if (timedOut) throw new ApiError(504, "PROVIDER_TIMEOUT", `O ${provider} demorou para responder. Tente novamente.`);
       if (request.signal.aborted) throw new ApiError(499, "REQUEST_CANCELLED", "A solicitação foi interrompida.");
+      logUnreachable(provider, error);
       throw new ApiError(502, "PROVIDER_UNAVAILABLE", `Não foi possível conectar ao ${provider}. Tente novamente.`);
     } finally {
       clearTimeout(timer);
@@ -321,10 +380,7 @@ export function createApiHandlers(options: {
         }),
         cancelled,
       ]);
-      if (!response.ok) {
-        void response.body?.cancel().catch(() => {});
-        throw upstreamError(response.status, "OpenAI");
-      }
+      if (!response.ok) throw await providerRefusal(response, "OpenAI");
       const mime = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
       if (!response.body || !["audio/pcm", "application/octet-stream"].includes(mime ?? "")) {
         void response.body?.cancel().catch(() => {});
@@ -410,10 +466,7 @@ export function createApiHandlers(options: {
         controller.signal.throwIfAborted();
         const signal = init?.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal;
         const response = await fetcher(url, { ...init, signal });
-        if (!response.ok) {
-          await response.body?.cancel();
-          throw upstreamError(response.status, "DeepSeek");
-        }
+        if (!response.ok) throw await providerRefusal(response, "DeepSeek");
         const bytes = await readLimited(response.body, UPSTREAM_JSON_LIMIT,
           new ApiError(502, "INVALID_RESPONSE", "O serviço retornou uma resposta muito grande."));
         try { JSON.parse(new TextDecoder().decode(bytes)); } catch {
@@ -421,6 +474,7 @@ export function createApiHandlers(options: {
         }
         return new Response(bytes as BodyInit, { status: response.status, headers: response.headers });
       } catch (error) {
+        if (!(error instanceof ApiError) && !controller.signal.aborted) logUnreachable("DeepSeek", error);
         transportError = error instanceof ApiError ? error
           : new ApiError(502, "PROVIDER_UNAVAILABLE", "Não foi possível conectar ao DeepSeek. Tente novamente.");
         throw transportError;

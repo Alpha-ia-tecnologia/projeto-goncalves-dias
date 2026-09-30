@@ -110,6 +110,51 @@ describe("provider routes", () => {
     expect(fetcher.mock.calls.length).toBeGreaterThan(1);
     expect(fetcher.mock.calls.length).toBeLessThanOrEqual(MAX_AGENT_MODEL_CALLS);
   });
+  describe("registro das recusas no servidor", () => {
+    const refusal = { error: { message: "The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed DeepSeek-V4.1-Flash. Key sk-live1234567890abcdef", type: "invalid_request_error" } };
+
+    it("anota por que o DeepSeek recusou, sem a chave e sem a pergunta do visitante", async () => {
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { api } = setup(vi.fn(async () => Response.json(refusal, { status: 400 })));
+        const response = await api.chat(post({ message: "Mensagem particular do visitante" }));
+        expect(response.status).toBe(502);
+        expect(await response.text()).not.toContain("supported API model names");
+        const logged = log.mock.calls.map(call => call.join(" ")).join("\n");
+        expect(logged).toContain("DeepSeek");
+        expect(logged).toContain("HTTP 400");
+        expect(logged).toContain("The supported API model names are deepseek-flash, deepseek-v4-pro");
+        expect(logged).not.toContain("sk-live1234567890abcdef");
+        expect(logged).not.toContain("Mensagem particular do visitante");
+      } finally { log.mockRestore(); }
+    });
+
+    it("anota a recusa da OpenAI na transcrição", async () => {
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const api = createApiHandlers({ config: () => configured, fetch: async () => Response.json({ error: { message: "Invalid file format." } }, { status: 400 }) });
+        const form = new FormData();
+        form.set("audio", new File([new Uint8Array([1, 2, 3])], "voz.webm", { type: "audio/webm" }));
+        const response = await api.transcribe(new Request("http://localhost/api/transcribe", { method: "POST", body: form }));
+        expect(response.status).toBe(502);
+        const logged = log.mock.calls.map(call => call.join(" ")).join("\n");
+        expect(logged).toMatch(/OpenAI.*HTTP 400.*Invalid file format\./);
+      } finally { log.mockRestore(); }
+    });
+
+    it("anota quando não consegue nem conectar ao provedor", async () => {
+      const log = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const failure = Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("getaddrinfo ENOTFOUND api.deepseek.com"), { code: "ENOTFOUND" }) });
+        const { api } = setup(vi.fn(async () => { throw failure; }));
+        const response = await api.chat(post({ message: "Oi" }));
+        expect(response.status).toBe(502);
+        const logged = log.mock.calls.map(call => call.join(" ")).join("\n");
+        expect(logged).toMatch(/conectar ao DeepSeek.*fetch failed.*ENOTFOUND/);
+      } finally { log.mockRestore(); }
+    });
+  });
+
   it("validates JSON and streamed request size before calling a provider", async () => {
     const { api, fetcher } = setup();
     const malformed = new Request("http://localhost/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{" });

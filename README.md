@@ -137,6 +137,8 @@ No serviço do Easypanel:
 2. **Domínios:** porta de destino **3000**.
 3. **Ambiente:** `DEEPSEEK_API_KEY`, `OPENAI_API_KEY` e `TRUST_PROXY_HEADERS=proxy`. Sem `proxy`, todos os visitantes dividem uma única cota de 30 pedidos por minuto. As demais variáveis do `.env.example` são opcionais.
 
+O Easypanel troca qualquer resposta `502` do aplicativo pela própria página de erro, então o navegador nunca vê o código nem a mensagem da API — só "Não foi possível preparar uma resposta". O motivo fica no log do serviço, sem chaves e sem a pergunta do visitante: `[api] DeepSeek recusou o pedido: HTTP 400 | The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed DeepSeek-V4.1-Flash.` Foi exatamente essa a causa de um 502 em produção: `DEEPSEEK_MODEL` aceita apenas os identificadores da API, como `deepseek-flash` (o padrão) e `deepseek-v4-pro`, e não o nome comercial do modelo. Falhas de conexão também são registradas, como `[api] não foi possível conectar ao DeepSeek: …`.
+
 Para conferir o servidor Node sem Docker: `DEPLOY_TARGET=node npm run build` e `node dist/standalone/server.js` (Git Bash; porta `PORT`, padrão 3000). No Windows, o vinext 0.0.50 indexa os arquivos estáticos com `\` e só serve os da raiz de `public/`; no Linux do contêiner todos são servidos.
 
 Referências: [DeepSeek Chat Completion](https://api-docs.deepseek.com/api/create-chat-completion/), [OpenAI — geração de voz](https://developers.openai.com/api/docs/guides/text-to-speech), [OpenAI — transcrição](https://developers.openai.com/api/docs/guides/speech-to-text), [Cloudflare — variáveis locais](https://developers.cloudflare.com/workers/local-development/environment-variables/).
