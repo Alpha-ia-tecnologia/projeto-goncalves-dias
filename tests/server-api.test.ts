@@ -489,7 +489,14 @@ describe("natural voice and streamed speech", () => {
   it.each([new Uint8Array(), new Uint8Array([1, 2, 3])])("rejects empty or truncated PCM without inventing a silent ending", async bytes => {
     const api = createApiHandlers({ config: () => configured, fetch: async () => new Response(bytes, { headers: { "Content-Type": "audio/pcm" } }) });
     const response = await api.speech(post({ text: "Olá!", format: "pcm" }));
-    await expect(response.arrayBuffer()).rejects.toMatchObject({ code: "INVALID_AUDIO" });
+    if (bytes.length === 0) {
+      expect(response.status).toBe(502);
+      expect(await response.json()).toMatchObject({ error: { code: "INVALID_AUDIO" } });
+    } else {
+      // Bytes already sent cannot be replaced with a JSON response on truncation.
+      expect(response.status).toBe(200);
+      await expect(response.arrayBuffer()).rejects.toMatchObject({ code: "INVALID_AUDIO" });
+    }
   });
 
   it("sanitizes errors raised after audio has started", async () => {

@@ -46,6 +46,8 @@ Ao usar o microfone, uma pausa de aproximadamente 1,4 segundo após a fala envia
 
 O fluxo de áudio cancela a leitura e os blocos agendados ao interromper. “Ouvir novamente” fica disponível após a reprodução completa e usa o WAV mantido apenas na memória da sessão. A geração e a reprodução continuam sujeitas à conexão e ao dispositivo; não há promessa de latência fixa.
 
+Se a conexão de streaming falhar antes de qualquer bloco ser agendado, o navegador faz uma única tentativa com o WAV completo. Erros HTTP de configuração, autenticação, cota ou provedor não são repetidos automaticamente. Se algum áudio já tiver sido agendado, a falha encerra a reprodução sem reiniciar a frase.
+
 Os controles de demonstração permitem conferir o modelo, a boca e os gestos antes de configurar os serviços. A síntese real usa a voz `cedar` por padrão; o modelo e a voz são configuráveis. O aplicativo não tenta reproduzir a voz histórica de Gonçalves Dias.
 
 ## O agente Gonçalves Dias
@@ -108,7 +110,7 @@ Referências técnicas: [agentes LangChain](https://docs.langchain.com/oss/javas
 | `POST /api/speech` | JSON `{text,voice?,format?:"wav"\|"pcm"}` | WAV completo por padrão; PCM16 little-endian mono em streaming com `X-Audio-Sample-Rate: 24000` |
 | `POST /api/transcribe` | Multipart com campo `audio` | JSON `{text}` |
 
-Erros têm formato `{error:{code,message}}`. Mensagens aceitam até 2.000 caracteres, respostas de voz até 1.600, histórico até 12 mensagens/12.000 caracteres e gravações até 8 MB. Apenas os papéis `user` e `assistant` são aceitos no histórico. O ciclo completo do agente, incluindo consulta e correções, tem limite de 45 segundos; as demais chamadas externas também têm limite de 45 segundos e são canceladas quando o cliente interrompe a solicitação. Erros de provedores são traduzidos sem devolver payloads internos ou credenciais.
+Erros têm formato `{error:{code,message}}`. Mensagens aceitam até 2.000 caracteres, respostas de voz até 1.600, histórico até 12 mensagens/12.000 caracteres e gravações até 8 MB. Apenas os papéis `user` e `assistant` são aceitos no histórico. O ciclo completo do agente, incluindo consulta e correções, tem limite de 45 segundos. Na voz PCM, conexão e primeiro áudio compartilham esse prazo; depois, o limite vale apenas enquanto o servidor espera novos dados do provedor, sem contar pausas de leitura do consumidor. Falhas anteriores ao primeiro áudio retornam um erro HTTP com JSON; interrupções posteriores registram apenas código, etapa, duração e quantidade de bytes, sem texto ou credenciais. As demais chamadas externas mantêm o limite total de 45 segundos. Todas são canceladas quando o cliente interrompe a solicitação. Erros de provedores são traduzidos sem devolver payloads internos ou credenciais.
 
 O limitador básico permite 30 solicitações por rota, por identificador, por minuto e mantém estado apenas no processo atual. Por padrão, todas as solicitações compartilham o identificador local; `X-Forwarded-For` é ignorado. Defina `TRUST_PROXY_HEADERS=cloudflare` somente em implantação protegida por uma borda Cloudflare que sobrescreve `CF-Connecting-IP`; nesse caso a cota usa esse IP. Defina `TRUST_PROXY_HEADERS=proxy` somente atrás de um único proxy reverso que acrescenta o endereço do visitante ao fim de `X-Forwarded-For`, como o Traefik do Easypanel; a cota usa esse último endereço, e os anteriores, que o visitante pode forjar, são ignorados. Uma implantação pública de maior escala deve aplicar autenticação e limite distribuído no provedor de hospedagem.
 
@@ -415,9 +417,9 @@ Os testes estão no bloco "a fala capturada" de `tests/mocap-rig.test.ts`.
 
 ### Fala contida e retorno ao repouso
 
-Os clipes de fala usam 60% da amplitude capturada (45% na cabe?a e no pesco?o) e 78% da velocidade. A voz e a boca mant?m seu ritmo original. A redu??o atua na pose, separadamente do peso que decide quem controla o corpo, para n?o reintroduzir gestos procedurais sobre a captura. Inclina??es do tronco cedem ao clipe; os acentos de cabe?a permanecem discretos.
+Os clipes de fala usam 60% da amplitude capturada (45% na cabeça e no pescoço) e 78% da velocidade. A voz e a boca mantêm seu ritmo original. A redução atua na pose, separadamente do peso que decide quem controla o corpo, para não reintroduzir gestos procedurais sobre a captura. Inclinações do tronco cedem ao clipe; os acentos de cabeça permanecem discretos.
 
-Depois da ?ltima palavra, a postura atravessa 0,6 s de pausa e se desfaz com amortecimento mais lento que a entrada. Os ajustes de repouso acompanham a sa?da do clipe. Respira??o, oscila??o postural e pequenas acomoda??es dos antebra?os continuam entre as mudan?as maiores de postura; desativar movimentos continua restaurando a pose neutra.
+Depois da última palavra, a postura atravessa 0,6 s de pausa e se desfaz com amortecimento mais lento que a entrada. Os ajustes de repouso acompanham a saída do clipe. Respiração, oscilação postural e pequenas acomodações dos antebraços continuam entre as mudanças maiores de postura; desativar movimentos continua restaurando a pose neutra.
 
 A regress?o ? verificada em `tests/speech-composure.test.ts` com o esqueleto e os dois clipes reais: velocidade e amplitude contidas, soltura em diferentes fases, retomada, repouso cont?nuo e movimento reduzido. A su?te existente verifica tamb?m os p?s plantados, os acenos e a consist?ncia entre taxas de quadros. Essas medidas n?o substituem a avalia??o visual da naturalidade.
 

@@ -62,7 +62,14 @@ const MAX_SCHEDULE_AHEAD_SECONDS = 0.65;
 const START_LEAD_SECONDS = 0.04;
 const cancelled = () => new DOMException('Reprodução cancelada', 'AbortError');
 
-class SpeechPlaybackError extends Error {}
+export class SpeechPlaybackError extends Error {
+  readonly canRetryBuffered: boolean;
+  constructor(message: string, options: ErrorOptions & { canRetryBuffered?: boolean } = {}) {
+    super(message, options);
+    this.name = 'SpeechPlaybackError';
+    this.canRetryBuffered = options.canRetryBuffered ?? false;
+  }
+}
 
 type Playback = {
   abort: AbortController;
@@ -278,7 +285,17 @@ export class SpeechPlayer {
         }
       };
       while (true) {
-        const item = await interruptible(reader.read(), playback.abort.signal);
+        let item: ReadableStreamReadResult<Uint8Array>;
+        try {
+          item = await interruptible(reader.read(), playback.abort.signal);
+        } catch (error) {
+          if (playback.abort.signal.aborted || (error instanceof Error && error.name === 'AbortError')) throw cancelled();
+          // Once any block was scheduled, a retry could repeat words already heard.
+          // Do not rely on onStart: the audio clock can start before the next RAF.
+          throw new SpeechPlaybackError('A transmissão da voz foi interrompida. Verifique sua conexão e tente novamente.', {
+            cause: error, canRetryBuffered: playback.firstStart === null,
+          });
+        }
         this.assertCurrent(playback);
         if (item.done) { ended = true; break; }
         if (!item.value.byteLength) continue;
@@ -299,7 +316,7 @@ export class SpeechPlayer {
     } catch (error) {
       if (playback.abort.signal.aborted || (error instanceof Error && error.name === 'AbortError')) throw cancelled();
       if (error instanceof SpeechPlaybackError) throw error;
-      throw new Error('A transmissão da voz foi interrompida. Verifique sua conexão e tente novamente.', { cause: error });
+      throw new SpeechPlaybackError('A transmissão da voz foi interrompida. Verifique sua conexão e tente novamente.', { cause: error });
     } finally {
       if (reader && !ended) void reader.cancel().catch(() => undefined);
       if (reader) {

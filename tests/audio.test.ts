@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { CLOSED_MOUTH, MouthAudioEnvelope, mouthFromAudio, spectralBandEnergy, SpeechPlayer } from '../lib/audio';
+import { CLOSED_MOUTH, MouthAudioEnvelope, mouthFromAudio, spectralBandEnergy, SpeechPlayer, SpeechPlaybackError } from '../lib/audio';
 import { getDemoReply } from '../lib/demo';
 
 describe('sincronia a partir do áudio', () => {
@@ -393,6 +393,35 @@ describe('voz PCM progressiva', () => {
     expect((await promise).message).toMatch(message);
     expect(frame).toHaveBeenLastCalledWith(CLOSED_MOUTH);
     expect(stream.locked).toBe(false);
+  });
+
+  it.each([0, 3840])('permite WAV após falha de rede com %i bytes sem nenhum bloco agendado', async size => {
+    const { stream, controller } = controlledStream();
+    const promise = player.playStream(stream).catch(error => error);
+    if (size) controller.enqueue(pcm(size));
+    await flushPromises();
+    expect(TestContext.instances[0].sources).toHaveLength(0);
+    controller.error(new TypeError('network interrupted'));
+    const failure = await promise;
+    expect(failure).toBeInstanceOf(SpeechPlaybackError);
+    expect(failure.canRetryBuffered).toBe(true);
+    expect(frame).toHaveBeenLastCalledWith(CLOSED_MOUTH);
+    expect(stream.locked).toBe(false);
+  });
+
+  it.each([0, 65])('proíbe fallback depois de agendar PCM, mesmo antes do RAF inicial (%i ms)', async elapsed => {
+    const { stream, controller } = controlledStream();
+    const started = vi.fn();
+    const promise = player.playStream(stream, started).catch(error => error);
+    controller.enqueue(pcm(7680));
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(elapsed);
+    expect(started).toHaveBeenCalledTimes(elapsed ? 1 : 0);
+    controller.error(new TypeError('network interrupted'));
+    const failure = await promise;
+    expect(failure).toBeInstanceOf(SpeechPlaybackError);
+    expect(failure.canRetryBuffered).toBe(false);
+    expect(TestContext.instances[0].sources.every(source => source.stopped)).toBe(true);
   });
 
   it('para blocos já agendados se a conexão falhar durante a resposta', async () => {

@@ -7,6 +7,7 @@ import { createPortal } from 'react-dom';
 import AvatarStage, { type AvatarHandle, type AvatarView, type WalkStatus } from './AvatarStage';
 import WalkControls from './WalkControls';
 import { SpeechPlayer, type MouthFrame } from '../lib/audio';
+import { playSpeechResponse } from '../lib/speech-transport';
 import { getDemoReply } from '../lib/demo';
 import { VoiceActivityDetector } from '../lib/voice-activity';
 import { useImmersiveMode } from './useImmersiveMode';
@@ -291,11 +292,6 @@ export default function ConversationApp() {
         return;
       }
       setPhase('preparing');
-      const response = demoMode
-        ? await fetch(demoAudio, { signal: controller.signal })
-        : await fetch('/api/speech', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, format: 'pcm' }), signal: controller.signal });
-      if (!response.ok) throw await readError(response, 'A resposta está no texto, mas não foi possível gerar a voz.');
-      if (current !== sequence.current || !voiceEnabledRef.current) { await response.body?.cancel(); return; }
       const onStart = () => {
         if (current !== sequence.current || !voiceEnabledRef.current) return;
         setPhase('speaking');
@@ -303,15 +299,17 @@ export default function ConversationApp() {
         if (replyGesture !== 'none') avatar.current?.gesture(replyGesture);
       };
       const activePlayer = player.current;
-      if (!activePlayer) { await response.body?.cancel(); return; }
+      if (!activePlayer) return;
       let bytes: ArrayBuffer;
       if (!demoMode) {
-        if (!response.body || !response.headers.get('Content-Type')?.startsWith('audio/pcm') || response.headers.get('X-Audio-Sample-Rate') !== '24000') {
-          await response.body?.cancel();
-          throw new Error('A resposta está no texto, mas o formato de voz veio incompleto. Tente novamente.');
-        }
-        bytes = await activePlayer.playStream(response.body, onStart);
+        bytes = await playSpeechResponse({
+          text, signal: controller.signal, player: activePlayer, onStart,
+          isCurrent: () => current === sequence.current && voiceEnabledRef.current,
+        });
       } else {
+        const response = await fetch(demoAudio, { signal: controller.signal });
+        if (!response.ok) throw await readError(response, 'A resposta está no texto, mas não foi possível gerar a voz.');
+        if (current !== sequence.current || !voiceEnabledRef.current) { await response.body?.cancel(); return; }
         bytes = await response.arrayBuffer();
         if (current !== sequence.current || !voiceEnabledRef.current) return;
         await activePlayer.play(bytes, onStart);

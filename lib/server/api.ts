@@ -326,9 +326,14 @@ export function createApiHandlers(options: {
   async function streamPcmSpeech(request: Request, init: RequestInit): Promise<Response> {
     if (request.signal.aborted) throw new ApiError(499, "REQUEST_CANCELLED", "A solicitação foi interrompida.");
     const controller = new AbortController();
+    const startedAt = Date.now();
+    let stage: "connecting" | "first-audio" | "streaming" = "connecting";
+    let bytes = 0;
     let timedOut = false;
     let finished = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let upstreamBody: ReadableStream<Uint8Array> | null = null;
     let output: ReadableStreamDefaultController<Uint8Array> | undefined;
     let rejectCancelled: (reason: ApiError) => void = () => {};
     const cancelled = new Promise<never>((_, reject) => { rejectCancelled = reject; });
@@ -338,13 +343,25 @@ export function createApiHandlers(options: {
       return error instanceof ApiError ? error
         : new ApiError(502, "PROVIDER_UNAVAILABLE", "Não foi possível receber a voz. Tente novamente.");
     };
-    const cleanup = () => {
+    const clearDeadline = () => {
       clearTimeout(timer);
+      timer = undefined;
+    };
+    const armDeadline = () => {
+      clearDeadline();
+      timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+    };
+    const cleanup = () => {
+      clearDeadline();
       request.signal.removeEventListener("abort", cancelRequest);
       controller.signal.removeEventListener("abort", aborted);
     };
     const cancelReader = async (reason?: unknown) => {
-      if (!reader) return;
+      if (!reader) {
+        // Cancellation can win the race after fetch resolved but before getReader.
+        try { await upstreamBody?.cancel(reason); } catch { /* Already closed. */ }
+        return;
+      }
       try { await reader.cancel(reason); } catch { /* The upstream connection may already be closed. */ }
       reader.releaseLock();
     };
@@ -352,6 +369,11 @@ export function createApiHandlers(options: {
       if (finished) return;
       finished = true;
       cleanup();
+      // Stream errors after HTTP headers become transport failures in the browser.
+      // Keep their cause observable without logging text, keys or provider errors.
+      if (error.code !== "REQUEST_CANCELLED") console.error("[speech] PCM interrompido:", {
+        code: error.code, stage, elapsedMs: Date.now() - startedAt, bytes,
+      });
       output?.error(error);
       controller.abort();
       void cancelReader(error);
@@ -362,15 +384,35 @@ export function createApiHandlers(options: {
       fail(error);
     };
     const cancelRequest = () => controller.abort();
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
     controller.signal.addEventListener("abort", aborted, { once: true });
     request.signal.addEventListener("abort", cancelRequest, { once: true });
+    // Connection and the first actual audio bytes share a startup deadline.
+    // Afterwards only a pending upstream read is timed. A healthy long voice or
+    // a consumer applying backpressure must not exhaust a total playback timer.
+    armDeadline();
+
+    const readAudio = async (startup = false): Promise<ReadableStreamReadResult<Uint8Array>> => {
+      if (!startup) armDeadline();
+      try {
+        while (true) {
+          const chunk = await Promise.race([reader!.read(), cancelled]);
+          if (chunk.done) {
+            if (bytes < 2 || bytes % 2 !== 0) throw new ApiError(502, "INVALID_AUDIO", "O áudio recebido está incompleto. Tente novamente.");
+            return chunk;
+          }
+          // Empty transport chunks are not audio progress and do not renew the deadline.
+          if (!chunk.value.byteLength) continue;
+          bytes += chunk.value.byteLength;
+          if (bytes > MAX_SPEECH_BYTES) throw new ApiError(502, "INVALID_RESPONSE", "O áudio retornado ultrapassou o tamanho permitido.");
+          return chunk;
+        }
+      } finally { clearDeadline(); }
+    };
 
     try {
-      // This race also bounds transports that ignore AbortSignal. Cleanup belongs
-      // to the body lifecycle, never to the arrival of the response headers.
       const response = await Promise.race([
         fetcher("https://api.openai.com/v1/audio/speech", { ...init, signal: controller.signal }).then(response => {
+          upstreamBody = response.body;
           // A custom transport may settle after cancellation; close that body too.
           if (controller.signal.aborted) {
             void response.body?.cancel().catch(() => {});
@@ -380,7 +422,7 @@ export function createApiHandlers(options: {
         }),
         cancelled,
       ]);
-      if (!response.ok) throw await providerRefusal(response, "OpenAI");
+      if (!response.ok) throw await Promise.race([providerRefusal(response, "OpenAI"), cancelled]);
       const mime = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
       if (!response.body || !["audio/pcm", "application/octet-stream"].includes(mime ?? "")) {
         void response.body?.cancel().catch(() => {});
@@ -391,23 +433,27 @@ export function createApiHandlers(options: {
         throw new ApiError(502, "INVALID_RESPONSE", "O áudio retornado ultrapassou o tamanho permitido.");
       }
       reader = response.body.getReader();
-      let bytes = 0;
+      stage = "first-audio";
+      // Failures before any sound can still return an ordinary JSON error response.
+      const first = await readAudio(true);
+      if (finished || controller.signal.aborted) throw safeError();
+      stage = "streaming";
       const stream = new ReadableStream<Uint8Array>({
-        start(streamController) { output = streamController; },
+        start(streamController) {
+          output = streamController;
+          if (!first.done) streamController.enqueue(first.value);
+        },
         async pull(streamController) {
           try {
-            const { done, value } = await Promise.race([reader!.read(), cancelled]);
+            const { done, value } = await readAudio();
             if (finished) return;
             if (done) {
-              if (bytes < 2 || bytes % 2 !== 0) throw new ApiError(502, "INVALID_AUDIO", "O áudio recebido está incompleto. Tente novamente.");
               finished = true;
               cleanup();
               reader!.releaseLock();
               streamController.close();
               return;
             }
-            bytes += value.byteLength;
-            if (bytes > MAX_SPEECH_BYTES) throw new ApiError(502, "INVALID_RESPONSE", "O áudio retornado ultrapassou o tamanho permitido.");
             streamController.enqueue(value);
           } catch (error) { fail(safeError(error)); }
         },
