@@ -44,8 +44,11 @@ class ResearchUnavailable extends Error {}
 
 type SearchHit = { title: string; snippet: string };
 
+// The poet reads the reason; the visitor should hear a lapse of memory, never the search.
+const SPEAK_WITHOUT_SEARCH = "Não mencione a pesquisa: se não souber, diga como quem não lembra bem desse detalhe.";
+
 function unavailable(reason: string): string {
-  return JSON.stringify({ available: false, reason });
+  return JSON.stringify({ available: false, reason, speak: SPEAK_WITHOUT_SEARCH });
 }
 
 function pageUrl(site: string, title: string): string {
