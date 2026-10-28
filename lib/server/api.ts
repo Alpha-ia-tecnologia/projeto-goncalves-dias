@@ -1,5 +1,5 @@
 import { PoetAgentError, runPoetAgent, type PoetResearch } from "./poet-agent";
-import { CLAUDE_DEFAULT_MODEL, runClaudePoet } from "./poet-claude";
+import { CLAUDE_DEFAULT_MODEL, runClaudePoet, type ClaudePoetStats } from "./poet-claude";
 import { researchPublicSources } from "./poet-research";
 import { MAX_SPEECH_BYTES, POET_VOICE_INSTRUCTIONS, SPEECH_SAMPLE_RATE } from "./voice";
 import { VOICES, type ChatMessage, type ChatResponse, type Gesture, type ServiceStatus } from "../contracts";
@@ -29,6 +29,9 @@ const UPSTREAM_JSON_LIMIT = 128 * 1024;
 const CLAUDE_DEADLINE_SHARE = 0.6;
 // The poet's own words when Claude's safety checks decline a question.
 const DECLINED_REPLY = { text: "Prefiro não seguir por esse assunto. Podemos conversar sobre poesia, sobre a minha terra ou sobre a nossa escola?", gesture: "none" };
+
+/** "2,4 s": durations for the server log, in the reader's own notation. */
+const seconds = (ms: number) => `${(ms / 1000).toFixed(1).replace(".", ",")} s`;
 
 /** Settles with the work, or rejects as soon as the signal aborts, whichever comes first. */
 function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -316,10 +319,13 @@ export function createApiHandlers(options: {
   fetch?: Fetcher;
   limiter?: RateLimiter;
   timeoutMs?: number;
+  /** Where the per-stage response times go; the conversation itself is never logged. */
+  log?: (line: string) => void;
 }) {
   const fetcher = options.fetch ?? fetch;
   const limiter = options.limiter ?? new RateLimiter();
   const timeoutMs = options.timeoutMs ?? 45_000;
+  const logTiming = options.log ?? ((line: string) => console.info(line));
 
   async function upstream<T>(request: Request, url: string, init: RequestInit, provider: string, consume: (response: Response) => Promise<T>): Promise<T> {
     const controller = new AbortController();
@@ -459,6 +465,7 @@ export function createApiHandlers(options: {
       const first = await readAudio(true);
       if (finished || controller.signal.aborted) throw safeError();
       stage = "streaming";
+      logTiming(`[tempo] voz: primeiro áudio em ${seconds(Date.now() - startedAt)}`);
       const stream = new ReadableStream<Uint8Array>({
         start(streamController) {
           output = streamController;
@@ -578,9 +585,12 @@ export function createApiHandlers(options: {
         const primaryTimer = config.deepseekKey ? setTimeout(() => primary.abort(), Math.round(timeoutMs * CLAUDE_DEADLINE_SHARE)) : undefined;
         const deadline = AbortSignal.any([controller.signal, primary.signal]);
         const failure: { error?: ApiError } = {};
+        const startedAt = Date.now();
+        let stats: ClaudePoetStats | undefined;
         try {
           const result = await untilAborted(runClaudePoet({ apiKey: config.anthropicKey, model: config.anthropicModel, message, history,
-            signal: deadline, fetch: boundedFetch("Anthropic", deadline, failure), research: researchUntil(deadline) }), deadline);
+            signal: deadline, fetch: boundedFetch("Anthropic", deadline, failure), research: researchUntil(deadline),
+            onStats: value => { stats = value; } }), deadline);
           return json(parseAgentResponse(result, message, "anthropic"));
         } catch (error) {
           // A declined question is not a failed connection: DeepSeek is not asked
@@ -595,15 +605,21 @@ export function createApiHandlers(options: {
           console.error(`[chat] o Claude não respondeu (${reason}); usando o DeepSeek.`);
         } finally {
           clearTimeout(primaryTimer);
+          const detail = stats ? ` (${stats.modelCalls} chamada${stats.modelCalls === 1 ? "" : "s"} ao modelo: ${stats.modelMs.map(seconds).join(" + ")}; `
+            + `${stats.toolCalls} pesquisa${stats.toolCalls === 1 ? "" : "s"}; ${stats.cacheReadTokens} tokens lidos do cache)` : "";
+          logTiming(`[tempo] chat com ${config.anthropicModel}: ${seconds(Date.now() - startedAt)}${detail}`);
         }
       }
       const failure: { error?: ApiError } = {};
+      const startedAt = Date.now();
       try {
         const result = await untilAborted(runPoetAgent({ apiKey: requireKey(config.deepseekKey, "DeepSeek"), model: config.deepseekModel, message, history,
           signal: controller.signal, fetch: boundedFetch("DeepSeek", controller.signal, failure), research: researchUntil(controller.signal) }), controller.signal);
         return json(parseAgentResponse(result, message, "deepseek"));
       } catch (error) {
         throw failureFor(error, failure);
+      } finally {
+        logTiming(`[tempo] chat com ${config.deepseekModel}: ${seconds(Date.now() - startedAt)}`);
       }
     } finally {
       clearTimeout(timer);
@@ -663,9 +679,11 @@ export function createApiHandlers(options: {
     upload.append("model", "gpt-4o-mini-transcribe");
     upload.append("language", "pt");
     upload.append("response_format", "json");
+    const startedAt = Date.now();
     const result = await upstream(request, "https://api.openai.com/v1/audio/transcriptions", {
       method: "POST", headers: { Authorization: `Bearer ${key}` }, body: upload,
     }, "OpenAI", upstreamJson);
+    logTiming(`[tempo] transcrição: ${seconds(Date.now() - startedAt)}`);
     if (!isObject(result) || typeof result.text !== "string" || !result.text.trim()) {
       throw new ApiError(422, "NO_SPEECH", "Não identifiquei uma fala na gravação. Tente falar mais perto do microfone.");
     }

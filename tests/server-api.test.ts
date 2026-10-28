@@ -31,9 +31,9 @@ describe("configuration and input boundaries", () => {
     expect(getStatus(readConfig({ DEEPSEEK_API_KEY: " " }))).toMatchObject({ deepseek: false });
   });
 
-  it("names Claude Opus 5.5 as the conversation model when its key is present", () => {
+  it("names Claude Sonnet 5.5 as the conversation model when its key is present", () => {
     const status = getStatus(readConfig({ ANTHROPIC_API_KEY: "anthropic-test-only", DEEPSEEK_API_KEY: "deepseek-test-only", OPENAI_API_KEY: "openai-test-only" }));
-    expect(status).toEqual({ anthropic: true, deepseek: true, openai: true, model: "claude-opus-5-5", voice: "cedar", mode: "live" });
+    expect(status).toEqual({ anthropic: true, deepseek: true, openai: true, model: "claude-sonnet-5-5", voice: "cedar", mode: "live" });
     expect(JSON.stringify(status)).not.toContain("test-only");
     expect(getStatus(readConfig({ ANTHROPIC_API_KEY: "anthropic-test-only", OPENAI_API_KEY: "openai-test-only" }))).toMatchObject({ mode: "live" });
   });
@@ -89,6 +89,17 @@ describe("Claude first, DeepSeek as the fallback", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ text: "Eu sou Gonçalves Dias e converso com você no meu gabinete.", gesture: "none", provider: "anthropic" });
     expect(urls(fetcher)).toEqual(["https://api.anthropic.com/v1/messages"]);
+  });
+
+  it("logs how long the reply took and what it cost in model calls, without the conversation", async () => {
+    const log = vi.fn<(line: string) => void>();
+    const fetcher = routed(() => Response.json(claudeReply()));
+    const api = createApiHandlers({ config: () => both, fetch: fetcher, log });
+    await api.chat(post({ message: "Mensagem particular do visitante" }));
+    const lines = log.mock.calls.map(call => call[0]).join("\n");
+    expect(lines).toMatch(/\[tempo\] chat com claude-sonnet-5-5: \d+,\d s \(1 chamada ao modelo: \d+,\d s; 0 pesquisas; 0 tokens lidos do cache\)/);
+    expect(lines).not.toContain("Mensagem particular");
+    expect(lines).not.toContain("converso com você");
   });
 
   it.each([[500], [529], [401], [429]])("falls back to DeepSeek when Claude answers HTTP %i, keeping the reason in the log only", async status => {

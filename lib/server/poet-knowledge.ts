@@ -98,3 +98,8 @@ export function lookupPoetKnowledge(topic: PoetKnowledgeTopic): string {
     sources: entry.sources,
   });
 }
+
+/** The whole collection at once, for a model that holds it in its instructions instead of calling consultar_acervo. */
+export function fullPoetKnowledge(): string {
+  return POET_KNOWLEDGE_TOPICS.map(topic => lookupPoetKnowledge(topic)).join("\n");
+}

@@ -1,6 +1,6 @@
 # Acervo Vivo — Gonçalves Dias
 
-Aplicação web com o modelo 3D do projeto Blender, conversa em português com o Claude Opus 5.5 (Anthropic) e o DeepSeek como reserva, voz sintetizada pela OpenAI, movimento de boca durante o áudio e aceno ao ouvir cumprimentos como “olá” ou “oi, tudo bem?”. O personagem é uma representação artística, com voz gerada por IA.
+Aplicação web com o modelo 3D do projeto Blender, conversa em português com o Claude Sonnet 5.5 (Anthropic) e o DeepSeek como reserva, voz sintetizada pela OpenAI, movimento de boca durante o áudio e aceno ao ouvir cumprimentos como “olá” ou “oi, tudo bem?”. O personagem é uma representação artística, com voz gerada por IA.
 
 ## Executar no Windows
 
@@ -22,7 +22,7 @@ Preencha apenas no arquivo local:
 ANTHROPIC_API_KEY=sua_chave_anthropic
 DEEPSEEK_API_KEY=sua_chave_deepseek
 OPENAI_API_KEY=sua_chave_openai
-ANTHROPIC_MODEL=claude-opus-5-5
+ANTHROPIC_MODEL=claude-sonnet-5-5
 DEEPSEEK_MODEL=deepseek-flash
 OPENAI_TTS_MODEL=gpt-4o-mini-tts
 OPENAI_TTS_VOICE=cedar
@@ -39,7 +39,7 @@ O diálogo, o microfone e o campo de mensagem ficam em uma coluna permanente à 
 O botão **Tela cheia** nos controles do personagem abre uma apresentação com apenas o avatar e o microfone. O mesmo modelo, áudio e histórico continuam ativos; nenhum deles é reiniciado ao trocar de modo. Mover o ponteiro ou tocar na tela revela a saída no canto superior direito por alguns segundos. **Esc** também retorna à conversa. Navegadores sem suporte à tela cheia nativa usam o mesmo modo dentro da janela. A entrada habilita respostas faladas, mas o microfone só é aberto após tocar no botão e conceder a permissão do navegador.
 
 1. Uma mensagem digitada segue para `/api/chat`; uma gravação passa primeiro por `/api/transcribe`.
-2. O servidor executa o agente com o Claude Opus 5.5 e, se ele falhar, com o DeepSeek, sempre com histórico limitado e a ferramenta consultar_acervo. O agente consulta fatos selecionados sobre vida, obras, poesia e a escola EDUCAPRIME, e entrega uma fala em primeira pessoa e um gesto validados.
+2. O servidor executa o agente com o Claude Sonnet 5.5 e, se ele falhar, com o DeepSeek, sempre com histórico limitado e o acervo de fatos selecionados sobre vida, obras, poesia e a escola EDUCAPRIME (nas instruções do Claude; pela ferramenta consultar_acervo no DeepSeek). O agente e entrega uma fala em primeira pessoa e um gesto validados.
 3. O texto da resposta segue para `/api/speech`, que usa `gpt-4o-mini-tts` e a voz Cedar com direção masculina em português brasileiro: timbre médio-grave, entonação variada, ritmo conversacional e pausas breves, sem declamação. Não há alteração artificial de pitch ou velocidade.
 4. O áudio PCM mono de 24 kHz chega progressivamente. O navegador começa com 0,5 s de áudio disponível e agenda de uma vez, em blocos contíguos, tudo o que já chegou, sem esperar o arquivo completo. A OpenAI costuma enviar a primeira sílaba e pausar até ~0,7 s antes do restante; esse meio segundo cobre a pausa, e agendar tudo o que chegou impede que a cena 3D ou o React atrasem o áudio. Se a rede atrasar e o áudio acabar antes da hora, o player espera um colchão maior (1 s, depois 2 s, até 4 s) antes de retomar: uma pausa única em vez de engasgos repetidos. Um analisador do áudio efetivamente reproduzido controla os três morphs da boca; cabeça, pescoço e torso acompanham a intensidade, enquanto as duas mãos alternam gestos moderados de conversa. O aceno tem prioridade sobre o gesto da mão direita; pausas e interrupções relaxam os braços suavemente. As transições são suavizadas e a boca fecha nas pausas. É sincronização por energia e espectro, não reconhecimento fonético de visemas.
 5. “Olá”, “oi”, “bom dia” e pedidos de aceno disparam o gesto `wave`. A regra considera palavras completas, aceita acentos e respeita “não acene”.
@@ -54,7 +54,9 @@ Os controles de demonstração permitem conferir o modelo, a boca e os gestos an
 
 ## O agente Gonçalves Dias
 
-O Claude Opus 5.5 responde primeiro, pelo SDK oficial `@anthropic-ai/sdk` (`lib/server/poet-claude.ts`): esforço `low` para uma conversa falada, as mesmas ferramentas `consultar_acervo` e `pesquisar` e a resposta final num JSON `{text, gesture}`, validado pelas mesmas regras de primeira pessoa e com uma única chance de correção. O pedido inclui `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`): se os filtros de segurança do Opus 5.5 recusarem, a própria API tenta o modelo Claude recomendado para aquela categoria. Se ainda assim o Claude recusar, o poeta muda de assunto com uma frase própria e o DeepSeek não é consultado.
+O Claude Sonnet 5.5 responde primeiro, pelo SDK oficial `@anthropic-ai/sdk` (`lib/server/poet-claude.ts`), com esforço `low` para uma conversa falada. O acervo inteiro (cerca de 7 KB) vai nas instruções, com cache, em vez da ferramenta `consultar_acervo`: uma pergunta sobre a vida, as obras ou a escola é respondida numa só chamada ao modelo, e só o que está fora do acervo passa pela ferramenta `pesquisar`. A resposta final vem num JSON `{text, gesture}`, validado pelas mesmas regras de primeira pessoa e com uma única chance de correção. O pedido inclui `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`): se os filtros de segurança do Claude recusarem, a própria API tenta o modelo Claude recomendado para aquela categoria. Se ainda assim o Claude recusar, o poeta muda de assunto com uma frase própria e o DeepSeek não é consultado. `ANTHROPIC_MODEL=claude-opus-5-5` volta ao Opus, que raciocina mais e responde mais devagar.
+
+O log do servidor registra o tempo de cada etapa, sem o conteúdo da conversa, em linhas neste formato (os números são ilustrativos): `[tempo] transcrição: 0,8 s`, `[tempo] chat com claude-sonnet-5-5: 2,1 s (1 chamada ao modelo: 2,1 s; 0 pesquisas; 4120 tokens lidos do cache)` e `[tempo] voz: primeiro áudio em 0,6 s`.
 
 O DeepSeek é a reserva, com `createAgent` do LangChain e `ChatDeepSeek` (`lib/server/poet-agent.ts`). Ele assume quando o Claude não tem chave, quando a API da Anthropic falha (autenticação, saldo, limite, sobrecarga, rede) ou quando o Claude passa de 60% do prazo da conversa; o motivo fica no log do servidor, sem chaves nem a pergunta. A resposta indica em `provider` quem respondeu (`anthropic` ou `deepseek`). A personagem fala em primeira pessoa: “Nasci…”, “Escrevi…” e “Minha poesia…”. O aviso de interpretação artística permanece na interface; em perguntas explícitas sobre autenticidade, o poeta também explica sua natureza digital em primeira pessoa.
 

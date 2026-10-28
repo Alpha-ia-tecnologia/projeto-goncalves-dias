@@ -1,4 +1,5 @@
 export {
+  fullPoetKnowledge,
   lookupPoetKnowledge,
   POET_KNOWLEDGE_SOURCES,
   POET_KNOWLEDGE_TOPICS,
