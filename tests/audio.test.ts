@@ -250,21 +250,22 @@ describe('voz PCM progressiva', () => {
     vi.useRealTimers();
   });
 
-  it('começa antes do fim da transmissão, mantém blocos contíguos e devolve WAV apenas após tocar tudo', async () => {
+  it('espera meio segundo de áudio, mantém blocos contíguos e devolve WAV apenas após tocar tudo', async () => {
     const { stream, controller } = controlledStream();
     const started = vi.fn();
     let finished = false;
     const promise = player.playStream(stream, started).then(result => { finished = true; return result; });
-    const first = pcm(7680);
+    const first = pcm(24000);
     controller.enqueue(first.subarray(0, 3));
+    controller.enqueue(first.subarray(3, 9600)); // The provider sends the first syllable at once...
     await flushPromises();
     const context = TestContext.instances[0];
+    await vi.advanceTimersByTimeAsync(600); // ...then pauses before streaming the rest.
     expect(context.sources).toHaveLength(0);
-    controller.enqueue(first.subarray(3));
+    controller.enqueue(first.subarray(9600));
     await flushPromises();
-    expect(context.sources).toHaveLength(2);
+    expect(context.sources).toHaveLength(1);
     expect(context.sources[0].buffer!.data.slice(0, 4)).toEqual(new Float32Array([0, -1, 32767 / 32768, .5]));
-    expect(context.sources[1].startedAt).toBeCloseTo(context.sources[0].startedAt + context.sources[0].buffer!.duration, 9);
     expect(started).not.toHaveBeenCalled();
     expect(frame.mock.calls.every(([value]) => value.open === 0)).toBe(true);
     await vi.advanceTimersByTimeAsync(65);
@@ -274,15 +275,16 @@ describe('voz PCM progressiva', () => {
     controller.enqueue(pcm(3840));
     controller.close();
     await flushPromises();
-    expect(context.sources).toHaveLength(3);
+    expect(context.sources).toHaveLength(2);
+    expect(context.sources[1].startedAt).toBeCloseTo(context.sources[0].startedAt + context.sources[0].buffer!.duration, 9);
     expect(finished).toBe(false); // Network completion is not playback completion.
-    await vi.advanceTimersByTimeAsync(240);
+    await vi.advanceTimersByTimeAsync(600);
     const wav = await promise;
-    expect(wav.byteLength).toBe(44 + 11520);
+    expect(wav.byteLength).toBe(44 + 27840);
     expect(new TextDecoder().decode(new Uint8Array(wav, 0, 4))).toBe('RIFF');
     expect(new DataView(wav).getUint32(24, true)).toBe(24000);
     expect(new DataView(wav).getUint16(22, true)).toBe(1);
-    expect(new Uint8Array(wav, 44, 7680)).toEqual(first);
+    expect(new Uint8Array(wav, 44, 24000)).toEqual(first);
     expect(started).toHaveBeenCalledTimes(1);
     expect(context.analysers).toHaveLength(1);
     expect(context.analysers[0].disconnect).toHaveBeenCalledOnce();
@@ -305,32 +307,52 @@ describe('voz PCM progressiva', () => {
     expect(started).toHaveBeenCalledOnce();
   });
 
-  it('limita a antecedência da agenda mesmo quando vários segundos chegam em um único chunk', async () => {
+  it('agenda de uma vez o que já chegou, sem depender do thread principal durante a fala', async () => {
     const { stream, controller } = controlledStream();
     const promise = player.playStream(stream);
     controller.enqueue(pcm(144000)); // Three seconds received all at once.
-    controller.close();
     await flushPromises();
     const context = TestContext.instances[0];
-    expect(context.sources.length).toBeGreaterThan(1);
-    expect(context.sources.length).toBeLessThan(12);
-    await vi.advanceTimersByTimeAsync(3200);
-    await promise;
-    expect(context.sources.length).toBeGreaterThan(30);
-    for (const source of context.sources) expect(source.startedAt - source.scheduledAt).toBeLessThanOrEqual(.651);
-    for (let index = 1; index < context.sources.length; index++) {
-      const previous = context.sources[index - 1];
-      expect(context.sources[index].startedAt).toBeCloseTo(previous.startedAt + previous.buffer!.duration, 9);
-    }
+    expect(context.sources).toHaveLength(1);
+    expect(context.sources[0].buffer!.duration).toBeCloseTo(3, 9);
+    controller.enqueue(pcm(48000)); // Reading continues while the first block is still ahead.
+    controller.close();
+    await flushPromises();
+    expect(context.sources).toHaveLength(2);
+    expect(context.sources[1].startedAt).toBeCloseTo(context.sources[0].startedAt + 3, 9);
+    await vi.advanceTimersByTimeAsync(4100);
+    expect((await promise).byteLength).toBe(44 + 192000);
+  });
+
+  it('quando o áudio acaba antes da hora, espera um colchão maior em vez de picotar', async () => {
+    const { stream, controller } = controlledStream();
+    const promise = player.playStream(stream);
+    controller.enqueue(pcm(24000));
+    await flushPromises();
+    const context = TestContext.instances[0];
+    expect(context.sources).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(700); // The half second ran out at 540 ms.
+    controller.enqueue(pcm(3840));
+    await flushPromises();
+    expect(context.sources).toHaveLength(1); // 80 ms now would only stutter again.
+    controller.enqueue(pcm(44160)); // Together, one second.
+    await flushPromises();
+    expect(context.sources).toHaveLength(2);
+    expect(context.sources[1].buffer!.duration).toBeCloseTo(1, 9);
+    expect(context.sources[1].startedAt).toBeCloseTo(context.currentTime + .04, 9);
+    controller.close();
+    await vi.advanceTimersByTimeAsync(1100);
+    expect((await promise).byteLength).toBe(44 + 72000);
   });
 
   it('cancela leitor e áudio pendente sem interromper uma reprodução iniciada em seguida', async () => {
     const first = controlledStream();
     const old = player.playStream(first.stream).catch(error => error);
-    first.controller.enqueue(pcm(7680));
+    first.controller.enqueue(pcm(24000));
     await flushPromises();
     const context = TestContext.instances[0];
     const oldSources = context.sources.slice();
+    expect(oldSources).toHaveLength(1);
     const next = controlledStream();
     const newStarted = vi.fn();
     const current = player.playStream(next.stream, newStarted);
@@ -348,7 +370,7 @@ describe('voz PCM progressiva', () => {
     expect(first.stream.locked).toBe(false);
   });
 
-  it('interrompe também uma fila de PCM grande enquanto aguarda espaço na agenda', async () => {
+  it('interrompe também vários segundos de PCM já agendados', async () => {
     const { stream, controller, cancel } = controlledStream();
     const started = vi.fn();
     const promise = player.playStream(stream, started).catch(error => error);
@@ -395,7 +417,7 @@ describe('voz PCM progressiva', () => {
     expect(stream.locked).toBe(false);
   });
 
-  it.each([0, 3840])('permite WAV após falha de rede com %i bytes sem nenhum bloco agendado', async size => {
+  it.each([0, 3840, 19200])('permite WAV após falha de rede com %i bytes sem nenhum bloco agendado', async size => {
     const { stream, controller } = controlledStream();
     const promise = player.playStream(stream).catch(error => error);
     if (size) controller.enqueue(pcm(size));
@@ -413,7 +435,7 @@ describe('voz PCM progressiva', () => {
     const { stream, controller } = controlledStream();
     const started = vi.fn();
     const promise = player.playStream(stream, started).catch(error => error);
-    controller.enqueue(pcm(7680));
+    controller.enqueue(pcm(24000));
     await flushPromises();
     await vi.advanceTimersByTimeAsync(elapsed);
     expect(started).toHaveBeenCalledTimes(elapsed ? 1 : 0);
@@ -427,8 +449,9 @@ describe('voz PCM progressiva', () => {
   it('para blocos já agendados se a conexão falhar durante a resposta', async () => {
     const { stream, controller } = controlledStream();
     const promise = player.playStream(stream).catch(error => error);
-    controller.enqueue(pcm(7680));
+    controller.enqueue(pcm(24000));
     await flushPromises();
+    expect(TestContext.instances[0].sources).toHaveLength(1);
     controller.error(new TypeError('terminated: socket hang up'));
     await flushPromises();
     expect((await promise).message).toBe('A transmissão da voz foi interrompida. Verifique sua conexão e tente novamente.');

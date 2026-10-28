@@ -55,10 +55,13 @@ export function spectralBandEnergy(
 }
 
 const PCM_SAMPLE_RATE = 24_000;
-const PCM_BLOCK_BYTES = 3_840; // 80 ms of signed, little-endian 16-bit mono PCM.
-const PCM_START_BYTES = PCM_BLOCK_BYTES * 2; // Absorb small variations in network delivery.
+const PCM_BYTES_PER_SECOND = PCM_SAMPLE_RATE * 2; // Signed, little-endian 16-bit mono PCM.
+const PCM_BLOCK_BYTES = 3_840; // 80 ms: the smallest block worth its own source node.
+// OpenAI sends the first ~0.2 s at once, then often pauses up to ~0.7 s before
+// streaming faster than real time. Half a second of audio rides out that pause.
+const PCM_START_BYTES = PCM_BYTES_PER_SECOND / 2;
+const PCM_MAX_CUSHION_BYTES = PCM_BYTES_PER_SECOND * 4;
 const MAX_PCM_BYTES = 20 * 1024 * 1024;
-const MAX_SCHEDULE_AHEAD_SECONDS = 0.65;
 const START_LEAD_SECONDS = 0.04;
 const cancelled = () => new DOMException('Reprodução cancelada', 'AbortError');
 
@@ -93,15 +96,6 @@ function interruptible<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
       value => { signal.removeEventListener('abort', abort); resolve(value); },
       error => { signal.removeEventListener('abort', abort); reject(error); },
     );
-  });
-}
-
-function delay(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.reject(cancelled());
-  return new Promise((resolve, reject) => {
-    const abort = () => { clearTimeout(timer); signal.removeEventListener('abort', abort); reject(cancelled()); };
-    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, ms);
-    signal.addEventListener('abort', abort, { once: true });
   });
 }
 
@@ -246,43 +240,45 @@ export class SpeechPlayer {
     let pendingOffset = 0;
     let pendingBytes = 0;
     let totalBytes = 0;
+    // End of the audio already handed to Web Audio; null while nothing is queued.
     let nextStart: number | null = null;
+    let cushion = PCM_START_BYTES;
     let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     let ended = false;
     try {
       reader = stream.getReader();
       playback.reader = reader;
       const context = await this.prepare(playback);
-      const flush = async (final: boolean) => {
-        if (nextStart === null && !final && pendingBytes < PCM_START_BYTES) return;
-        while (pendingBytes >= PCM_BLOCK_BYTES || (final && pendingBytes >= 2)) {
-          this.assertCurrent(playback);
-          while (nextStart !== null && nextStart - context.currentTime > MAX_SCHEDULE_AHEAD_SECONDS) {
-            await delay(20, playback.abort.signal);
-            this.assertCurrent(playback);
-          }
-          const size = Math.min(PCM_BLOCK_BYTES, pendingBytes - pendingBytes % 2);
-          const pcm = new Uint8Array(size);
-          let offset = 0;
-          while (offset < size) {
-            const head = pending[0];
-            const length = Math.min(head.byteLength - pendingOffset, size - offset);
-            pcm.set(head.subarray(pendingOffset, pendingOffset + length), offset);
-            offset += length;
-            pendingOffset += length;
-            if (pendingOffset === head.byteLength) { pending.shift(); pendingOffset = 0; }
-          }
-          pendingBytes -= size;
-          const buffer = context.createBuffer(1, size / 2, PCM_SAMPLE_RATE);
-          const samples = buffer.getChannelData(0);
-          const view = new DataView(pcm.buffer);
-          for (let index = 0; index < samples.length; index++) samples[index] = view.getInt16(index * 2, true) / 32_768;
-          // Resume after an actual network underrun; otherwise keep every block sample-contiguous.
-          const at: number = nextStart === null || nextStart < context.currentTime
-            ? context.currentTime + START_LEAD_SECONDS : nextStart;
-          this.schedule(playback, context, buffer, at);
-          nextStart = at + buffer.duration;
+      // Everything received is scheduled at once, so a busy main thread (the 3D
+      // scene, React renders) cannot starve the audio thread; only the network can.
+      const flush = (final: boolean) => {
+        if (nextStart !== null && nextStart <= context.currentTime) {
+          // Ran dry: wait for a longer cushion, so one pause replaces repeated stutters.
+          nextStart = null;
+          cushion = Math.min(cushion * 2, PCM_MAX_CUSHION_BYTES);
         }
+        if (nextStart === null && !final && pendingBytes < cushion) return;
+        if (pendingBytes < (final ? 2 : PCM_BLOCK_BYTES)) return;
+        const size = pendingBytes - pendingBytes % 2;
+        const pcm = new Uint8Array(size);
+        let offset = 0;
+        while (offset < size) {
+          const head = pending[0];
+          const length = Math.min(head.byteLength - pendingOffset, size - offset);
+          pcm.set(head.subarray(pendingOffset, pendingOffset + length), offset);
+          offset += length;
+          pendingOffset += length;
+          if (pendingOffset === head.byteLength) { pending.shift(); pendingOffset = 0; }
+        }
+        pendingBytes -= size;
+        const buffer = context.createBuffer(1, size / 2, PCM_SAMPLE_RATE);
+        const samples = buffer.getChannelData(0);
+        const view = new DataView(pcm.buffer);
+        for (let index = 0; index < samples.length; index++) samples[index] = view.getInt16(index * 2, true) / 32_768;
+        // Keep every block sample-contiguous with the previous one.
+        const at = nextStart ?? context.currentTime + START_LEAD_SECONDS;
+        this.schedule(playback, context, buffer, at);
+        nextStart = at + buffer.duration;
       };
       while (true) {
         let item: ReadableStreamReadResult<Uint8Array>;
@@ -305,11 +301,11 @@ export class SpeechPlayer {
         chunks.push(chunk);
         pending.push(chunk);
         pendingBytes += chunk.byteLength;
-        await flush(false);
+        flush(false);
       }
       if (!totalBytes) throw new SpeechPlaybackError('A resposta de voz veio sem áudio. Tente novamente.');
       if (totalBytes % 2) throw new SpeechPlaybackError('A transmissão de voz terminou incompleta. Tente novamente.');
-      await flush(true);
+      flush(true);
       await this.drain(playback);
       this.assertCurrent(playback);
       return pcmAsWav(chunks, totalBytes);
