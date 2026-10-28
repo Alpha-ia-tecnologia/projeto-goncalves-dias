@@ -17,7 +17,7 @@ type Phase = 'idle' | 'thinking' | 'preparing' | 'speaking' | 'requesting' | 're
 type ServiceStatus = { anthropic: boolean; deepseek: boolean; openai: boolean; model: string; voice: string; mode: 'live' | 'demo' };
 type Message = { id: string; role: 'user' | 'assistant'; text: string; demo?: boolean };
 type Gesture = 'wave' | 'nod' | 'none';
-const welcome: Message = { id: 'welcome', role: 'assistant', text: 'Sou Gonçalves Dias. Trago comigo a poesia e a saudade. Diga-me: que lembrança ou ideia você gostaria de partilhar?' };
+const welcome: Message = { id: 'welcome', role: 'assistant', text: 'Sou Gonçalves Dias, e trago comigo a poesia e a saudade da minha terra. Diga-me, que lembrança ou ideia você gostaria de partilhar comigo?' };
 const phases: Record<Phase, string> = { idle: 'Pronto para conversar', thinking: 'Preparando uma resposta', preparing: 'Preparando a voz', speaking: 'Falando com você', requesting: 'Aguardando permissão do microfone', recording: 'Ouvindo você', transcribing: 'Entendendo sua mensagem' };
 
 function conversationHistory(messages: Message[]) {
