@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { createPortal } from 'react-dom';
 import AvatarStage, { type AvatarHandle, type AvatarView, type WalkStatus } from './AvatarStage';
 import WalkControls from './WalkControls';
+import IntroScreen from './IntroScreen';
 import { SpeechPlayer, type MouthFrame } from '../lib/audio';
 import { playSpeechResponse } from '../lib/speech-transport';
 import { getDemoReply } from '../lib/demo';
@@ -13,7 +14,7 @@ import { VoiceActivityDetector } from '../lib/voice-activity';
 import { useImmersiveMode } from './useImmersiveMode';
 
 type Phase = 'idle' | 'thinking' | 'preparing' | 'speaking' | 'requesting' | 'recording' | 'transcribing';
-type ServiceStatus = { deepseek: boolean; openai: boolean; model: string; voice: string; mode: 'live' | 'demo' };
+type ServiceStatus = { anthropic: boolean; deepseek: boolean; openai: boolean; model: string; voice: string; mode: 'live' | 'demo' };
 type Message = { id: string; role: 'user' | 'assistant'; text: string; demo?: boolean };
 type Gesture = 'wave' | 'nod' | 'none';
 const welcome: Message = { id: 'welcome', role: 'assistant', text: 'Sou Gonçalves Dias. Trago comigo a poesia e a saudade. Diga-me: que lembrança ou ideia você gostaria de partilhar?' };
@@ -75,7 +76,15 @@ export default function ConversationApp() {
   const [error, setError] = useState('');
   const [ready, setReady] = useState(false);
   const [modelError, setModelError] = useState('');
-  const [view, setView] = useState<AvatarView>('conversation');
+  // Every visit opens on the intro over the whole study; starting moves the camera to the conversation.
+  const [intro, setIntro] = useState(true);
+  const [introLeaving, setIntroLeaving] = useState(false);
+  const introTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // A visitor who enters while the study is still loading is greeted once it is ready.
+  const waveWhenReady = useRef(false);
+  const [view, setView] = useState<AvatarView>('intro');
+  // The heading is only focusable once the intro class is gone from the rendered shell.
+  useEffect(() => { if (!intro) document.getElementById('page-title')?.focus({ preventScroll: true }); }, [intro]);
   const [walkMode, setWalkMode] = useState(false);
   const [walkStatus, setWalkStatus] = useState<WalkStatus>({ state: 'idle', active: false, destination: null });
   const returningToChat = useRef(false);
@@ -105,11 +114,11 @@ export default function ConversationApp() {
       const response = await fetch('/api/status', { cache: 'no-store' });
       if (!response.ok) throw new Error('Status indisponível');
       const body: unknown = await response.json();
-      if (!isObject(body) || typeof body.deepseek !== 'boolean' || typeof body.openai !== 'boolean'
+      if (!isObject(body) || typeof body.anthropic !== 'boolean' || typeof body.deepseek !== 'boolean' || typeof body.openai !== 'boolean'
         || typeof body.model !== 'string' || typeof body.voice !== 'string' || (body.mode !== 'live' && body.mode !== 'demo')) {
         throw new Error('Status inválido');
       }
-      setStatus({ deepseek: body.deepseek, openai: body.openai, model: body.model, voice: body.voice, mode: body.mode });
+      setStatus({ anthropic: body.anthropic, deepseek: body.deepseek, openai: body.openai, model: body.model, voice: body.voice, mode: body.mode });
       setStatusError(false);
     } catch { setStatusError(true); }
   }, []);
@@ -154,7 +163,14 @@ export default function ConversationApp() {
     // Between replies the character visibly listens or thinks; speech and rest use the idle attention.
     avatar.current?.attend(phase === 'recording' ? 'listening' : phase === 'thinking' || phase === 'transcribing' || phase === 'preparing' ? 'thinking' : 'idle');
   }, [phase]);
-  const onAvatarReady = useCallback(() => { setReady(true); setModelError(''); }, [setReady, setModelError]);
+  const onAvatarReady = useCallback(() => {
+    setReady(true);
+    setModelError('');
+    if (waveWhenReady.current) {
+      waveWhenReady.current = false;
+      introTimers.current.push(setTimeout(() => avatar.current?.gesture('wave'), 600));
+    }
+  }, [setReady, setModelError]);
   const onAvatarError = useCallback((message: string) => { setModelError(message); setReady(false); }, [setReady, setModelError]);
 
   const onWalkStatus = useCallback((status: WalkStatus) => {
@@ -199,6 +215,30 @@ export default function ConversationApp() {
     setWalkMode(true);
     setView('walk');
     if (!avatar.current?.walkTo([0, 0])) returningToChat.current = false;
+  }
+
+  function startExperience() {
+    if (introLeaving) return;
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    setIntroLeaving(true);
+    setView('conversation');
+    introTimers.current = [setTimeout(() => {
+      setIntro(false);
+      setIntroLeaving(false);
+    }, reduced ? 0 : 650)];
+    // The poet greets the visitor once the camera has reached him, or once he has loaded.
+    if (motionEnabled && ready) introTimers.current.push(setTimeout(() => avatar.current?.gesture('wave'), reduced ? 0 : 1100));
+    else if (motionEnabled) waveWhenReady.current = true;
+  }
+
+  function showIntro() {
+    introTimers.current.forEach(clearTimeout);
+    waveWhenReady.current = false;
+    stop();
+    closeWalking();
+    setIntroLeaving(false);
+    setIntro(true);
+    setView('intro');
   }
 
   function openModal(kind: 'settings' | 'about') {
@@ -520,10 +560,10 @@ export default function ConversationApp() {
   );
 
   return (
-    <div ref={shell} className={`app-shell chat-spatial ${immersiveMode.immersive ? 'is-immersive' : ''} ${immersiveMode.controlsVisible ? 'show-immersive-controls' : ''}`} onPointerMove={immersiveMode.revealControls} onPointerDown={immersiveMode.revealControls} onKeyDown={immersiveMode.revealControls}>
+    <div ref={shell} className={`app-shell chat-spatial ${intro ? 'is-intro' : ''} ${immersiveMode.immersive ? 'is-immersive' : ''} ${immersiveMode.controlsVisible ? 'show-immersive-controls' : ''}`} onPointerMove={immersiveMode.revealControls} onPointerDown={immersiveMode.revealControls} onKeyDown={immersiveMode.revealControls}>
       {immersiveMode.immersive && <button type="button" className="fullscreen-exit icon-button" onClick={immersiveMode.exit} aria-label="Sair da tela cheia" title="Sair da tela cheia (Esc)"><Minimize2 size={21} /></button>}
       <header className="site-header">
-        <Link href="/" className="wordmark" aria-label="Acervo Vivo, início"><BookOpen className="brand-symbol" size={43} strokeWidth={2.6} /><span className="wordmark-text">Acervo Vivo</span></Link>
+        <Link href="/" className="wordmark" aria-label="Acervo Vivo, início" onClick={event => { event.preventDefault(); showIntro(); }}><BookOpen className="brand-symbol" size={43} strokeWidth={2.6} /><span className="wordmark-text">Acervo Vivo</span></Link>
         <nav className="header-actions" aria-label="Navegação principal">
           <span className="current-character">Gonçalves Dias</span><span className="header-divider" aria-hidden="true" />
           <button className="profile-button" aria-label="Sobre o Acervo Vivo" title="Sobre a experiência" onClick={() => openModal('about')}><UserRound size={22} strokeWidth={2.2} /></button>
@@ -533,11 +573,12 @@ export default function ConversationApp() {
       <main className="experience-stage" aria-labelledby="page-title">
         <section className="avatar-region" aria-label="Gabinete de Gonçalves Dias em 3D">
           <div className="stage-backdrop" aria-hidden="true" />
-          <div className="stage-view">
-            <AvatarStage key={avatarVersion} ref={avatar} view={immersiveMode.immersive && (view === 'conversation' || view === 'walk') ? 'full' : view} motionEnabled={motionEnabled} showChatPedestal={!immersiveMode.immersive} walkEnabled={walkMode && !immersiveMode.immersive} onWalkStatus={onWalkStatus} onChatSurface={setChatSurface} onReady={onAvatarReady} onError={onAvatarError} />
+          <div className="stage-view" inert={intro}>
+            <AvatarStage key={avatarVersion} ref={avatar} view={immersiveMode.immersive && (view === 'conversation' || view === 'walk') ? 'full' : view} motionEnabled={motionEnabled} showChatPedestal={!immersiveMode.immersive && !intro} walkEnabled={walkMode && !immersiveMode.immersive} onWalkStatus={onWalkStatus} onChatSurface={setChatSurface} onReady={onAvatarReady} onError={onAvatarError} />
             {!ready && <div className="avatar-loading"><div className="loading-label" role="status">{modelError ? <><span>Não foi possível abrir a visualização 3D.</span><button className="small-button" onClick={() => { setModelError(''); setAvatarVersion(value => value + 1); }}>Tentar novamente</button></> : <><LoaderCircle size={17} className="spin" /><span>Preparando o poeta e seu gabinete…</span></>}</div></div>}
           </div>
-          <div className="scene-heading"><h1 id="page-title">Gonçalves Dias</h1><p>Poeta e escritor <span className="scene-location">· Em seu gabinete</span></p></div>
+          {intro && <IntroScreen ready={ready} failed={Boolean(modelError)} leaving={introLeaving} onStart={startExperience} />}
+          <div className="scene-heading"><h1 id="page-title" tabIndex={-1}>Gonçalves Dias</h1><p>Poeta e escritor <span className="scene-location">· Em seu gabinete</span></p></div>
           <div className="scene-actions"><button ref={readingButton} className="reading-button" onClick={() => setExpandedChat(true)}><Maximize2 size={16} />Ler conversa</button>
             <button className={`connection-pill ${!demoMode ? 'connected' : ''}`} onClick={() => openModal('settings')} title="Ver conexões"><span className="status-dot" />{statusError ? 'Sem conexão' : !status ? 'Conectando' : demoMode ? 'Demonstração' : 'Conectado'}</button>
             <button className="icon-button" aria-label="Configurar conexões" title="Configurações" onClick={() => openModal('settings')}><Settings2 size={19} /></button>
@@ -565,7 +606,7 @@ export default function ConversationApp() {
       </dialog>
       <dialog ref={dialog} className="info-dialog" aria-labelledby="info-dialog-title" onClick={event => { if (event.target === event.currentTarget) dialog.current?.close(); }}>
         <div className="dialog-content"><button className="dialog-close icon-button" aria-label="Fechar janela" onClick={() => dialog.current?.close()}><X size={20} /></button><p className="eyebrow">{modal === 'settings' ? 'CONEXÕES' : 'SOBRE A EXPERIÊNCIA'}</p><h2 id="info-dialog-title">{modal === 'settings' ? 'Dê voz à conversa.' : 'Uma presença feita de possibilidades.'}</h2>
-          {modal === 'settings' ? <><p className="dialog-intro">O agente com DeepSeek pode consultar o acervo disponível para preparar as respostas. A OpenAI transforma o texto em voz. As chaves ficam no servidor, protegidas do navegador.</p><div className="service-list">{[{name:'DeepSeek',description:'Inteligência da conversa',active:status?.deepseek},{name:'OpenAI',description:'Voz e transcrição',active:status?.openai}].map(service => <div className="service-row" key={service.name}><div><strong>{service.name}</strong><span>{service.description}</span></div><span className={`service-state ${service.active ? 'configured' : ''}`}>{service.active ? <><Check size={13} />Configurado</> : 'Aguardando chave'}</span></div>)}</div><div className="setup-guide"><h3>Configuração local</h3><p>Preencha estas variáveis em <code>web/.env.local</code> e reinicie o aplicativo. Não coloque as chaves em mensagens ou no código público.</p><pre>DEEPSEEK_API_KEY=sua_chave{ '\n' }OPENAI_API_KEY=sua_chave</pre><p>Neste projeto, as conexões com as APIs ficam na execução local. A versão hospedada funciona como demonstração.</p></div><button className="primary-button" onClick={() => void refreshStatus()}><RotateCcw size={16} />Verificar conexão</button><p className="dialog-note">Sem as duas conexões, a prévia usa respostas prontas e gravações sintéticas locais. Não há consulta aos modelos nesse modo.</p></> : <><p className="dialog-intro">Gonçalves Dias ganha uma interpretação digital para uma conversa próxima, com voz, expressão e movimento.</p><div className="how-it-works"><div><span>01</span><p><strong>Você inicia a conversa.</strong>Digite ou toque no microfone. Uma pausa ao terminar envia sua fala; você também pode tocar novamente para enviar.</p></div><div><span>02</span><p><strong>Minha resposta ganha voz.</strong>Quando conectado, o agente pode consultar meu acervo para preparar a resposta. A OpenAI gera uma voz masculina em português brasileiro, com entonação e pausas naturais.</p></div><div><span>03</span><p><strong>O personagem responde.</strong>A boca acompanha o áudio, enquanto cabeça, pescoço e mãos acompanham o ritmo da conversa. Enquanto ouve você, ele inclina a cabeça e acena nas suas pausas; enquanto prepara a resposta, desvia o olhar. Saudações como “olá” e “oi, tudo bem?” também acionam um aceno.</p></div></div><p className="dialog-note">Esta é uma representação artística com IA, não uma gravação ou uma fala histórica autêntica. A conversa fica apenas nesta sessão; mensagens e áudios enviados às APIs são processados pelos respectivos provedores.</p></>}
+          {modal === 'settings' ? <><p className="dialog-intro">O Claude Opus 5.5, da Anthropic, prepara as respostas consultando o acervo disponível; se ele falhar, o DeepSeek assume a conversa. A OpenAI transforma o texto em voz. As chaves ficam no servidor, protegidas do navegador.</p><div className="service-list">{[{name:'Claude (Anthropic)',description:'Inteligência da conversa',active:status?.anthropic},{name:'DeepSeek',description:'Reserva da conversa',active:status?.deepseek},{name:'OpenAI',description:'Voz e transcrição',active:status?.openai}].map(service => <div className="service-row" key={service.name}><div><strong>{service.name}</strong><span>{service.description}</span></div><span className={`service-state ${service.active ? 'configured' : ''}`}>{service.active ? <><Check size={13} />Configurado</> : 'Aguardando chave'}</span></div>)}</div><div className="setup-guide"><h3>Configuração local</h3><p>Preencha estas variáveis em <code>web/.env.local</code> e reinicie o aplicativo. Não coloque as chaves em mensagens ou no código público.</p><pre>ANTHROPIC_API_KEY=sua_chave{ '\n' }DEEPSEEK_API_KEY=sua_chave{ '\n' }OPENAI_API_KEY=sua_chave</pre><p>Neste projeto, as conexões com as APIs ficam na execução local. A versão hospedada funciona como demonstração.</p></div><button className="primary-button" onClick={() => void refreshStatus()}><RotateCcw size={16} />Verificar conexão</button><p className="dialog-note">Sem a OpenAI e um dos modelos de conversa, a prévia usa respostas prontas e gravações sintéticas locais. Não há consulta aos modelos nesse modo.</p></> : <><p className="dialog-intro">Gonçalves Dias ganha uma interpretação digital para uma conversa próxima, com voz, expressão e movimento.</p><div className="how-it-works"><div><span>01</span><p><strong>Você inicia a conversa.</strong>Digite ou toque no microfone. Uma pausa ao terminar envia sua fala; você também pode tocar novamente para enviar.</p></div><div><span>02</span><p><strong>Minha resposta ganha voz.</strong>Quando conectado, o agente pode consultar meu acervo para preparar a resposta. A OpenAI gera uma voz masculina em português brasileiro, com entonação e pausas naturais.</p></div><div><span>03</span><p><strong>O personagem responde.</strong>A boca acompanha o áudio, enquanto cabeça, pescoço e mãos acompanham o ritmo da conversa. Enquanto ouve você, ele inclina a cabeça e acena nas suas pausas; enquanto prepara a resposta, desvia o olhar. Saudações como “olá” e “oi, tudo bem?” também acionam um aceno.</p></div></div><p className="dialog-note">Esta é uma representação artística com IA, não uma gravação ou uma fala histórica autêntica. A conversa fica apenas nesta sessão; mensagens e áudios enviados às APIs são processados pelos respectivos provedores.</p></>}
         </div>
       </dialog>
     </div>

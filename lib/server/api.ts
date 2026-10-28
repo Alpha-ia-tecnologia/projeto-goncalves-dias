@@ -1,11 +1,14 @@
 import { PoetAgentError, runPoetAgent, type PoetResearch } from "./poet-agent";
+import { CLAUDE_DEFAULT_MODEL, runClaudePoet } from "./poet-claude";
 import { researchPublicSources } from "./poet-research";
 import { MAX_SPEECH_BYTES, POET_VOICE_INSTRUCTIONS, SPEECH_SAMPLE_RATE } from "./voice";
 import { VOICES, type ChatMessage, type ChatResponse, type Gesture, type ServiceStatus } from "../contracts";
 
 export interface ServerConfig {
+  anthropicKey?: string;
   deepseekKey?: string;
   openaiKey?: string;
+  anthropicModel: string;
   deepseekModel: string;
   ttsModel: string;
   voice: string;
@@ -22,6 +25,20 @@ const MAX_HISTORY_CHARS = 12_000;
 const MAX_AUDIO = 8 * 1024 * 1024;
 const JSON_LIMIT = 64 * 1024;
 const UPSTREAM_JSON_LIMIT = 128 * 1024;
+// With DeepSeek configured as the fallback, Claude may spend this share of the chat deadline.
+const CLAUDE_DEADLINE_SHARE = 0.6;
+// The poet's own words when Claude's safety checks decline a question.
+const DECLINED_REPLY = { text: "Prefiro não seguir por esse assunto. Podemos conversar sobre poesia, sobre a minha terra ou sobre a nossa escola?", gesture: "none" };
+
+/** Settles with the work, or rejects as soon as the signal aborts, whichever comes first. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException("A solicitação foi interrompida.", "AbortError"));
+    if (signal.aborted) { onAbort(); return; }
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
 
 
 class ApiError extends Error {
@@ -40,8 +57,10 @@ class ApiError extends Error {
 export function readConfig(env: EnvValues): ServerConfig {
   const value = (key: string, fallback = "") => typeof env[key] === "string" ? (env[key] as string).trim() : fallback;
   return {
+    anthropicKey: value("ANTHROPIC_API_KEY") || undefined,
     deepseekKey: value("DEEPSEEK_API_KEY") || undefined,
     openaiKey: value("OPENAI_API_KEY") || undefined,
+    anthropicModel: value("ANTHROPIC_MODEL") || CLAUDE_DEFAULT_MODEL,
     deepseekModel: value("DEEPSEEK_MODEL") || "deepseek-flash",
     ttsModel: value("OPENAI_TTS_MODEL") || "gpt-4o-mini-tts",
     voice: value("OPENAI_TTS_VOICE") || "cedar",
@@ -51,12 +70,14 @@ export function readConfig(env: EnvValues): ServerConfig {
 }
 
 export function getStatus(config: ServerConfig): ServiceStatus {
+  // Claude answers first; DeepSeek is the fallback, or the only model when Claude has no key.
   return {
+    anthropic: Boolean(config.anthropicKey),
     deepseek: Boolean(config.deepseekKey),
     openai: Boolean(config.openaiKey),
-    model: config.deepseekModel,
+    model: config.anthropicKey ? config.anthropicModel : config.deepseekModel,
     voice: config.voice,
-    mode: config.deepseekKey && config.openaiKey ? "live" : "demo",
+    mode: (config.anthropicKey || config.deepseekKey) && config.openaiKey ? "live" : "demo",
   };
 }
 
@@ -101,7 +122,7 @@ export function validateChat(value: unknown): { message: string; history: ChatMe
   return { message, history };
 }
 
-export function parseAgentResponse(parsed: unknown, message: string): ChatResponse {
+export function parseAgentResponse(parsed: unknown, message: string, provider: ChatResponse["provider"] = "deepseek"): ChatResponse {
   if (!isObject(parsed) || typeof parsed.text !== "string" || !parsed.text.trim()
     || typeof parsed.gesture !== "string" || !["wave", "nod", "none"].includes(parsed.gesture)) {
     throw new ApiError(502, "INVALID_RESPONSE", "A resposta da IA não pôde ser interpretada.");
@@ -115,7 +136,7 @@ export function parseAgentResponse(parsed: unknown, message: string): ChatRespon
   const intent = gestureIntent(message);
   const gesture: Gesture = intent.forbidWave && parsed.gesture === "wave" ? "none"
     : intent.wave ? "wave" : parsed.gesture as Gesture;
-  return { text, gesture, provider: "deepseek" };
+  return { text, gesture, provider };
 }
 
 /** Per-isolate, fixed-window protection. Not a distributed production quota. */
@@ -496,23 +517,25 @@ export function createApiHandlers(options: {
 
   const chat = route("chat", async (request, config) => {
     const { message, history } = validateChat(await requestJson(request));
-    const key = requireKey(config.deepseekKey, "DeepSeek");
+    if (!config.anthropicKey && !config.deepseekKey) {
+      throw new ApiError(503, "CONFIG_REQUIRED", "A conexão com a IA ainda não foi configurada no servidor.");
+    }
     const controller = new AbortController();
     let timedOut = false;
-    let transportError: ApiError | undefined;
     const cancel = () => controller.abort(request.signal.reason);
     if (request.signal.aborted) cancel();
     request.signal.addEventListener("abort", cancel, { once: true });
     const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
 
-    // All steps share one deadline; the SDK uses this bounded transport, with
-    // retries disabled. Provider details and credentials never reach the client.
-    const agentFetch: typeof fetch = async (url, init) => {
+    // All steps of one attempt share its deadline; the SDKs use this bounded
+    // transport, with retries disabled. Provider details and credentials never
+    // reach the client. The transport failure is kept to explain the error.
+    const boundedFetch = (provider: string, deadline: AbortSignal, failure: { error?: ApiError }): typeof fetch => async (url, init) => {
       try {
-        controller.signal.throwIfAborted();
-        const signal = init?.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal;
+        deadline.throwIfAborted();
+        const signal = init?.signal ? AbortSignal.any([deadline, init.signal]) : deadline;
         const response = await fetcher(url, { ...init, signal });
-        if (!response.ok) throw await providerRefusal(response, "DeepSeek");
+        if (!response.ok) throw await providerRefusal(response, provider);
         const bytes = await readLimited(response.body, UPSTREAM_JSON_LIMIT,
           new ApiError(502, "INVALID_RESPONSE", "O serviço retornou uma resposta muito grande."));
         try { JSON.parse(new TextDecoder().decode(bytes)); } catch {
@@ -520,48 +543,71 @@ export function createApiHandlers(options: {
         }
         return new Response(bytes as BodyInit, { status: response.status, headers: response.headers });
       } catch (error) {
-        if (!(error instanceof ApiError) && !controller.signal.aborted) logUnreachable("DeepSeek", error);
-        transportError = error instanceof ApiError ? error
-          : new ApiError(502, "PROVIDER_UNAVAILABLE", "Não foi possível conectar ao DeepSeek. Tente novamente.");
-        throw transportError;
+        if (!(error instanceof ApiError) && !deadline.aborted) logUnreachable(provider, error);
+        failure.error = error instanceof ApiError ? error
+          : new ApiError(502, "PROVIDER_UNAVAILABLE", `Não foi possível conectar ao ${provider}. Tente novamente.`);
+        throw failure.error;
       }
     };
+    // Research shares the attempt's deadline and cancellation, but not its
+    // transport: a failed lookup comes back to the poet as unavailable.
+    const researchUntil = (deadline: AbortSignal): PoetResearch => (source, query) =>
+      researchPublicSources(source, query, { fetch: fetcher, signal: deadline });
 
-    let onAbort: (() => void) | undefined;
-    try {
-      controller.signal.throwIfAborted();
-      const cancelled = new Promise<never>((_, reject) => {
-        onAbort = () => reject(new DOMException("A solicitação foi interrompida.", "AbortError"));
-        controller.signal.addEventListener("abort", onAbort, { once: true });
-      });
-      // Research shares the conversation's deadline and cancellation, but not the
-      // DeepSeek transport: a failed lookup comes back to the poet as unavailable.
-      const research: PoetResearch = (source, query) =>
-        researchPublicSources(source, query, { fetch: fetcher, signal: controller.signal });
-      const result = await Promise.race([
-        runPoetAgent({ apiKey: key, model: config.deepseekModel, message, history,
-          signal: controller.signal, fetch: agentFetch, research }),
-        cancelled,
-      ]);
-      return json(parseAgentResponse(result, message));
-    } catch (error) {
-      if (timedOut) throw new ApiError(504, "PROVIDER_TIMEOUT", "O poeta demorou para responder. Tente novamente.");
-      if (request.signal.aborted) throw new ApiError(499, "REQUEST_CANCELLED", "A solicitação foi interrompida.");
-      if (transportError) throw transportError;
+    // The visitor is told something gentle; whoever runs the server is told
+    // what actually happened. Without the log the 502 says nothing at all, and
+    // the reply that caused it is gone by the time anyone comes to ask.
+    const failureFor = (error: unknown, failure: { error?: ApiError }): ApiError => {
+      if (timedOut) return new ApiError(504, "PROVIDER_TIMEOUT", "O poeta demorou para responder. Tente novamente.");
+      if (request.signal.aborted) return new ApiError(499, "REQUEST_CANCELLED", "A solicitação foi interrompida.");
+      if (failure.error) return failure.error;
       if (error instanceof PoetAgentError && error.code === "AGENT_LIMIT") {
         console.error("[chat] o poeta esgotou as etapas permitidas sem concluir a resposta.");
-        throw new ApiError(502, "AGENT_LIMIT", "Não consegui concluir minha resposta. Pode reformular sua pergunta?");
+        return new ApiError(502, "AGENT_LIMIT", "Não consegui concluir minha resposta. Pode reformular sua pergunta?");
       }
-      // The visitor is told something gentle; whoever runs the server is told
-      // what actually happened. Without this the 502 says nothing at all, and
-      // the reply that caused it is gone by the time anyone comes to ask.
       console.error("[chat] a resposta do poeta foi recusada:",
         error instanceof PoetAgentError ? error.detail ?? error.message : error);
-      throw new ApiError(502, "INVALID_RESPONSE", "Não consegui preparar minha resposta. Tente novamente.");
+      return new ApiError(502, "INVALID_RESPONSE", "Não consegui preparar minha resposta. Tente novamente.");
+    };
+
+    try {
+      if (config.anthropicKey) {
+        // Claude answers first. With DeepSeek behind it, Claude gets part of the
+        // deadline, so the fallback still has time to answer.
+        const primary = new AbortController();
+        const primaryTimer = config.deepseekKey ? setTimeout(() => primary.abort(), Math.round(timeoutMs * CLAUDE_DEADLINE_SHARE)) : undefined;
+        const deadline = AbortSignal.any([controller.signal, primary.signal]);
+        const failure: { error?: ApiError } = {};
+        try {
+          const result = await untilAborted(runClaudePoet({ apiKey: config.anthropicKey, model: config.anthropicModel, message, history,
+            signal: deadline, fetch: boundedFetch("Anthropic", deadline, failure), research: researchUntil(deadline) }), deadline);
+          return json(parseAgentResponse(result, message, "anthropic"));
+        } catch (error) {
+          // A declined question is not a failed connection: DeepSeek is not asked
+          // instead, and the poet steers the conversation elsewhere.
+          if (error instanceof PoetAgentError && error.code === "REFUSED") {
+            console.error(`[chat] o Claude recusou a pergunta (${error.detail}); o poeta muda de assunto.`);
+            return json(parseAgentResponse(DECLINED_REPLY, message, "anthropic"));
+          }
+          if (controller.signal.aborted || !config.deepseekKey) throw failureFor(error, failure);
+          const reason = primary.signal.aborted ? "tempo esgotado" : failure.error?.code
+            ?? (error instanceof PoetAgentError ? `${error.code}: ${error.detail ?? error.message}` : String(error));
+          console.error(`[chat] o Claude não respondeu (${reason}); usando o DeepSeek.`);
+        } finally {
+          clearTimeout(primaryTimer);
+        }
+      }
+      const failure: { error?: ApiError } = {};
+      try {
+        const result = await untilAborted(runPoetAgent({ apiKey: requireKey(config.deepseekKey, "DeepSeek"), model: config.deepseekModel, message, history,
+          signal: controller.signal, fetch: boundedFetch("DeepSeek", controller.signal, failure), research: researchUntil(controller.signal) }), controller.signal);
+        return json(parseAgentResponse(result, message, "deepseek"));
+      } catch (error) {
+        throw failureFor(error, failure);
+      }
     } finally {
       clearTimeout(timer);
       request.signal.removeEventListener("abort", cancel);
-      if (onAbort) controller.signal.removeEventListener("abort", onAbort);
     }
   });
 

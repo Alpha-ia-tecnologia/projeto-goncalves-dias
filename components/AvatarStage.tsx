@@ -215,8 +215,9 @@ const AvatarStage = forwardRef<AvatarHandle, Props>(function AvatarStage(props, 
         desiredPosition.fromArray(frame.cameraPosition);
       } else {
         const focus = stageFraming(view, camera.aspect, modelTop);
-        const x = view === "room" ? 0 : (position?.x ?? 0);
-        const z = view === "room" ? 0.075 : (position?.z ?? 0) + 0.075;
+        const roomCamera = view === "room" || view === "intro";
+        const x = roomCamera ? 0 : (position?.x ?? 0);
+        const z = roomCamera ? 0.075 : (position?.z ?? 0) + 0.075;
         desiredTarget.set(x, focus.targetY, z);
         desiredPosition.set(x, focus.targetY, focus.distance + z);
       }

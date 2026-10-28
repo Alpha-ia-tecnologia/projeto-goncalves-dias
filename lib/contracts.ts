@@ -13,10 +13,11 @@ export interface ChatRequest {
 export interface ChatResponse {
   text: string;
   gesture: Gesture;
-  provider: "deepseek";
+  provider: "anthropic" | "deepseek";
 }
 
 export interface ServiceStatus {
+  anthropic: boolean;
   deepseek: boolean;
   openai: boolean;
   model: string;

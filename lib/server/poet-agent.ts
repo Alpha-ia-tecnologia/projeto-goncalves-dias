@@ -13,6 +13,17 @@ export const MAX_AGENT_TOOL_CALLS = 6;
 // in one step, all at once; past this the extra ones are answered without going out.
 export const MAX_RESEARCH_CALLS = 3;
 
+// Both providers offer the poet the same tools, described in the same words.
+export const ARCHIVE_TOOL_DESCRIPTION = "Consulte fatos verificados de minha vida, obras, estilo, contexto e da escola EDUCAPRIME, ou o trecho disponível de Canção do exílio. Use antes de afirmar fatos biográficos, dados da escola ou citar meus versos.";
+export const RESEARCH_TOOL_DESCRIPTION = "Pesquise em fontes públicas quando o acervo não cobrir a pergunta ou para conferir um detalhe antes de afirmá-lo. source enciclopedia consulta a Wikipédia em português (fatos de história, literatura, ciência, geografia, outros autores); source poema traz do Wikisource o texto integral de um poema em domínio público — inclua o título e o autor na consulta. Nunca use para a escola EDUCAPRIME.";
+export const RESEARCH_QUERY_DESCRIPTION = "Termos da pesquisa, curtos e específicos, como numa busca de enciclopédia.";
+export const ArchiveToolInput = z.object({ topic: z.enum(POET_KNOWLEDGE_TOPICS) }).strict();
+export const ResearchToolInput = z.object({
+  source: z.enum(RESEARCH_SOURCES),
+  query: z.string().trim().min(2).max(200).describe(RESEARCH_QUERY_DESCRIPTION),
+}).strict();
+export const RESEARCH_LIMIT_RESULT = JSON.stringify({ available: false, reason: "O limite de pesquisas desta resposta foi atingido. Responda com o que já foi encontrado." });
+
 // JSON Schema retains patterns, whereas arbitrary Zod refinements are lost when
 // ToolStrategy converts the schema. This gives the agent actionable retry feedback.
 // Plural forms count: speaking of "nossa escola" is the poet speaking as one of the house.
@@ -43,8 +54,9 @@ export class PoetAgentError extends Error {
    * server as nothing at all: the reply that caused it is gone by then, and the
    * question has to be guessed at from outside.
    */
-  constructor(public readonly code: "AGENT_LIMIT" | "INVALID_RESPONSE", public readonly detail?: string) {
-    super(code === "AGENT_LIMIT" ? "O agente atingiu o limite de etapas." : "A resposta do agente não respeitou o formato esperado.");
+  constructor(public readonly code: "AGENT_LIMIT" | "INVALID_RESPONSE" | "REFUSED", public readonly detail?: string) {
+    super(code === "AGENT_LIMIT" ? "O agente atingiu o limite de etapas."
+      : code === "REFUSED" ? "O modelo recusou o pedido." : "A resposta do agente não respeitou o formato esperado.");
     this.name = "PoetAgentError";
   }
 }
@@ -122,27 +134,14 @@ export async function runPoetAgent(input: PoetAgentInput): Promise<{ text: strin
 
   const consultArchive = tool(
     ({ topic }) => lookupPoetKnowledge(topic),
-    {
-      name: "consultar_acervo",
-      description: "Consulte fatos verificados de minha vida, obras, estilo, contexto e da escola EDUCAPRIME, ou o trecho disponível de Canção do exílio. Use antes de afirmar fatos biográficos, dados da escola ou citar meus versos.",
-      schema: z.object({ topic: z.enum(POET_KNOWLEDGE_TOPICS) }).strict(),
-    },
+    { name: "consultar_acervo", description: ARCHIVE_TOOL_DESCRIPTION, schema: ArchiveToolInput },
   );
 
   const research = input.research;
   let researchCalls = 0;
   const searchPublicSources = research && tool(
-    ({ source, query }) => ++researchCalls > MAX_RESEARCH_CALLS
-      ? JSON.stringify({ available: false, reason: "O limite de pesquisas desta resposta foi atingido. Responda com o que já foi encontrado." })
-      : research(source, query),
-    {
-      name: "pesquisar",
-      description: "Pesquise em fontes públicas quando o acervo não cobrir a pergunta ou para conferir um detalhe antes de afirmá-lo. source enciclopedia consulta a Wikipédia em português (fatos de história, literatura, ciência, geografia, outros autores); source poema traz do Wikisource o texto integral de um poema em domínio público — inclua o título e o autor na consulta. Nunca use para a escola EDUCAPRIME.",
-      schema: z.object({
-        source: z.enum(RESEARCH_SOURCES),
-        query: z.string().trim().min(2).max(200).describe("Termos da pesquisa, curtos e específicos, como numa busca de enciclopédia."),
-      }).strict(),
-    },
+    ({ source, query }) => ++researchCalls > MAX_RESEARCH_CALLS ? RESEARCH_LIMIT_RESULT : research(source, query),
+    { name: "pesquisar", description: RESEARCH_TOOL_DESCRIPTION, schema: ResearchToolInput },
   );
 
   let modelCalls = 0;

@@ -73,4 +73,16 @@ describe("the poet in the supplied study", () => {
       expect((head.y - feet.y) / 2).toBeGreaterThan(0.39);
     }
   });
+
+  it("opens the intro from the room's camera with a wider lens, so entering pushes toward the poet", () => {
+    for (const aspect of [0.46, 1.3, 16 / 9]) {
+      const room = stageFraming("room", aspect);
+      const intro = stageFraming("intro", aspect);
+      expect(intro.distance).toBeCloseTo(room.distance, 8);
+      expect(intro.targetY).toBe(room.targetY);
+      const height = (camera: PerspectiveCamera) => (new Vector3(0, 1.9, 0).project(camera).y - new Vector3(0, 0, 0).project(camera).y) / 2;
+      // The poet stands at least a fifth smaller in the intro than in the room view.
+      expect(height(cameraFor("intro", aspect))).toBeLessThan(height(cameraFor("room", aspect)) * 0.8);
+    }
+  });
 });

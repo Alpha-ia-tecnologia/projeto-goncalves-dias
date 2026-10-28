@@ -25,10 +25,17 @@ const setup = (fetcher = vi.fn(async () => Response.json(agentCompletion()))) =>
 
 describe("configuration and input boundaries", () => {
   it("reports only readiness and public model names", () => {
-    expect(getStatus(configured)).toEqual({ deepseek: true, openai: true, model: "deepseek-flash", voice: "cedar", mode: "live" });
+    expect(getStatus(configured)).toEqual({ anthropic: false, deepseek: true, openai: true, model: "deepseek-flash", voice: "cedar", mode: "live" });
     expect(JSON.stringify(getStatus(configured))).not.toContain("test-only");
-    expect(getStatus(readConfig({}))).toMatchObject({ deepseek: false, openai: false, mode: "demo" });
+    expect(getStatus(readConfig({}))).toMatchObject({ anthropic: false, deepseek: false, openai: false, mode: "demo" });
     expect(getStatus(readConfig({ DEEPSEEK_API_KEY: " " }))).toMatchObject({ deepseek: false });
+  });
+
+  it("names Claude Opus 5.5 as the conversation model when its key is present", () => {
+    const status = getStatus(readConfig({ ANTHROPIC_API_KEY: "anthropic-test-only", DEEPSEEK_API_KEY: "deepseek-test-only", OPENAI_API_KEY: "openai-test-only" }));
+    expect(status).toEqual({ anthropic: true, deepseek: true, openai: true, model: "claude-opus-5-5", voice: "cedar", mode: "live" });
+    expect(JSON.stringify(status)).not.toContain("test-only");
+    expect(getStatus(readConfig({ ANTHROPIC_API_KEY: "anthropic-test-only", OPENAI_API_KEY: "openai-test-only" }))).toMatchObject({ mode: "live" });
   });
 
   it("rejects system-role injection, excessive history and oversized input", () => {
@@ -59,6 +66,95 @@ describe("configuration and input boundaries", () => {
     expect(() => parseAgentResponse({ text: "Oi", gesture: ["wave"] }, "Oi")).toThrow();
     expect(() => parseAgentResponse("not JSON", "Oi")).toThrow();
     expect(parseAgentResponse(structuredReply("Eu " + "a ".repeat(1500)), "poesia").text.length).toBeLessThanOrEqual(1600);
+  });
+});
+
+describe("Claude first, DeepSeek as the fallback", () => {
+  const both = readConfig({ ANTHROPIC_API_KEY: "anthropic-test-only", DEEPSEEK_API_KEY: "deepseek-test-only", OPENAI_API_KEY: "openai-test-only" });
+  const claudeOnly = readConfig({ ANTHROPIC_API_KEY: "anthropic-test-only", OPENAI_API_KEY: "openai-test-only" });
+  const claudeReply = (text = "Eu sou Gonçalves Dias e converso com você no meu gabinete.", gesture = "none") => ({
+    id: "msg_api_test", type: "message", role: "assistant", model: "claude-opus-5-5", stop_reason: "end_turn", stop_sequence: null,
+    content: [{ type: "text", text: JSON.stringify({ text, gesture }) }], usage: { input_tokens: 30, output_tokens: 20 },
+  });
+  const routed = (claude: () => Response | Promise<Response>) => vi.fn(async (input: string | URL | Request) => {
+    const url = String(input instanceof Request ? input.url : input);
+    return url.startsWith("https://api.anthropic.com/") ? claude() : Response.json(agentCompletion());
+  });
+  const urls = (fetcher: ReturnType<typeof vi.fn>) => fetcher.mock.calls.map(call => String(call[0] instanceof Request ? call[0].url : call[0]));
+
+  it("answers with Claude and never calls DeepSeek when Claude replies", async () => {
+    const fetcher = routed(() => Response.json(claudeReply()));
+    const api = createApiHandlers({ config: () => both, fetch: fetcher });
+    const response = await api.chat(post({ message: "Quem é você?" }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ text: "Eu sou Gonçalves Dias e converso com você no meu gabinete.", gesture: "none", provider: "anthropic" });
+    expect(urls(fetcher)).toEqual(["https://api.anthropic.com/v1/messages"]);
+  });
+
+  it.each([[500], [529], [401], [429]])("falls back to DeepSeek when Claude answers HTTP %i, keeping the reason in the log only", async status => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const fetcher = routed(() => new Response("secret anthropic-test-only detail", { status }));
+      const api = createApiHandlers({ config: () => both, fetch: fetcher });
+      const response = await api.chat(post({ message: "Olá" }));
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toMatchObject({ provider: "deepseek", gesture: "wave" });
+      expect(JSON.stringify(body)).not.toContain("anthropic-test-only");
+      expect(urls(fetcher).at(-1)).toBe("https://api.deepseek.com/chat/completions");
+      expect(log.mock.calls.map(call => call.join(" ")).join("\n")).toContain("usando o DeepSeek");
+    } finally { log.mockRestore(); }
+  });
+
+  it("falls back to DeepSeek when Claude cannot be reached at all", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const fetcher = routed(() => { throw new TypeError("fetch failed"); });
+      const api = createApiHandlers({ config: () => both, fetch: fetcher });
+      const response = await api.chat(post({ message: "Oi" }));
+      expect(await response.json()).toMatchObject({ provider: "deepseek" });
+    } finally { log.mockRestore(); }
+  });
+
+  it("falls back when Claude takes its whole share of the deadline", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input instanceof Request ? input.url : input);
+        if (!url.startsWith("https://api.anthropic.com/")) return Response.json(agentCompletion());
+        return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true }));
+      });
+      const api = createApiHandlers({ config: () => both, fetch: fetcher, timeoutMs: 200 });
+      const response = await api.chat(post({ message: "Oi" }));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ provider: "deepseek" });
+    } finally { log.mockRestore(); }
+  });
+
+  it("answers a safety decline in character without asking DeepSeek", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const fetcher = routed(() => Response.json({ ...claudeReply(), content: [], stop_reason: "refusal", stop_details: { type: "refusal", category: "bio", explanation: null } }));
+      const api = createApiHandlers({ config: () => both, fetch: fetcher });
+      const response = await api.chat(post({ message: "Pergunta recusada" }));
+      expect(response.status).toBe(200);
+      const body = await response.json() as { text: string };
+      expect(body).toMatchObject({ provider: "anthropic", gesture: "none" });
+      expect(body.text).toMatch(/^Prefiro não seguir/);
+      expect(urls(fetcher).every(url => url.startsWith("https://api.anthropic.com/"))).toBe(true);
+    } finally { log.mockRestore(); }
+  });
+
+  it("returns Claude's own failure when no DeepSeek fallback is configured", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const fetcher = routed(() => new Response("overloaded", { status: 529 }));
+      const api = createApiHandlers({ config: () => claudeOnly, fetch: fetcher });
+      const response = await api.chat(post({ message: "Oi" }));
+      expect(response.status).toBe(502);
+      expect(await response.json()).toMatchObject({ error: { code: "PROVIDER_ERROR" } });
+      expect(urls(fetcher).every(url => url.startsWith("https://api.anthropic.com/"))).toBe(true);
+    } finally { log.mockRestore(); }
   });
 });
 

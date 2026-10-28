@@ -1,14 +1,19 @@
 import { MathUtils } from "three";
 
-export type AvatarView = "portrait" | "full" | "room" | "conversation" | "walk";
+export type AvatarView = "portrait" | "full" | "room" | "conversation" | "walk" | "intro";
 
 export const STAGE_FOV = 40;
+/**
+ * The intro keeps the room view's camera behind a wider lens. The camera never
+ * leaves the room; narrowing the lens to the conversation reads as a push toward the poet.
+ */
+export const INTRO_FOV = 68;
 /** Present the writing desk and books while the poet still faces the visitor. */
 export const STUDY_ROTATION = -0.65;
 
 export function stageFraming(view: AvatarView, aspect: number, modelTop = 1.9) {
   const width = Math.max(aspect, 0.3);
-  const fov = view === "room" ? 55 : STAGE_FOV;
+  const fov = view === "room" || view === "intro" ? 55 : STAGE_FOV;
   const minimumHeight = view === "portrait" ? 1.6 : view === "full" ? 2.35 : 4.6;
   const height = Math.max(minimumHeight, 1.5 / width);
   const distance = height / (2 * Math.tan(MathUtils.degToRad(fov / 2)));
@@ -17,7 +22,7 @@ export function stageFraming(view: AvatarView, aspect: number, modelTop = 1.9) {
     : view === "full" ? modelTop / 2 + 0.1 : 1.47;
   const maxDistance = Math.max(distance, Math.min(distance * 1.25, 6.2));
   return {
-    fov,
+    fov: view === "intro" ? INTRO_FOV : fov,
     distance,
     targetY,
     minDistance: Math.max(1.4, distance * 0.74),
